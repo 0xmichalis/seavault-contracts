@@ -30,10 +30,45 @@ Amounts are enforced per unit offered, because partial fills settle pro rata. Bu
 (or ceilings) of every item. Variable-amount items are measured pessimistically: vault proceeds at
 their lowest point, fees and vault spend at their highest.
 
+## Subscription
+
+Charging happens off the order entirely, because OpenSea's orderbook will not carry a fee: it rejects
+any order with a consideration item it cannot attribute to itself or the collection
+(`You have provided fees that we cannot attribute to OpenSea or the collection`), refuses one whose
+first consideration item pays anyone but the offerer, and only accepts its own two zones. So there is
+no room in a posted order for a protocol cut.
+
+Instead the factory doubles as a subscription registry, and the vault checks it before signing:
+
+- Vaults are created with a **trial window** (`trialPeriod`, 30 days by default), so a fresh vault
+  trades immediately.
+- After that, `extendSubscription(vault, periods)` buys 30-day periods at `subscriptionPrice` wei
+  each. Anyone may pay for any vault; payment must be exact and is forwarded to
+  `subscriptionRecipient` on the spot. Paying early stacks onto the current expiry rather than
+  discarding it; paying after a lapse starts from the moment of payment.
+- `renewSubscription(periods)` on the vault does the same out of the vault's own balance. Owner only:
+  letting the keeper spend vault funds — even on the service — hands a compromised key a way to burn
+  them. Keepers should watch `paidThrough` and raise the alarm instead.
+- **A lapse stops signing, nothing else.** `isValidSignature` reverts with `SubscriptionInactive`, so
+  new orders cannot be made and outstanding ones stop filling. Withdrawals, cancels,
+  `incrementCounter` and every policy setter keep working, so a vault is never held hostage. Paying
+  revives outstanding orders without resigning them.
+- **Paid time can only grow.** There is no code path that shortens `paidThrough`; raising the price or
+  cutting the trial applies to future purchases only. That, plus unconditional custody, is what makes
+  the gate safe to depend on.
+- `setPriceOverride(vault, enabled, price)` prices individual vaults off-schedule — zero for partner,
+  subscriber or in-house vaults, or a discount.
+- Shipping default is **free** (`subscriptionPrice = 0`), which makes every vault subscribed
+  regardless of the clock, so a fresh deployment is usable before any pricing decision is made.
+
+A per-fill cut is still possible on the **buy path**, where the vault fulfills someone else's order
+and the transaction is ours to build rather than the orderbook's to validate. That waits for the buy
+path itself to exist.
+
 ## Layout
 
     src/ListoorVault.sol                     the vault
-    src/ListoorVaultFactory.sol              deployment and registry
+    src/ListoorVaultFactory.sol              deployment, registry and subscriptions
     src/libraries/SeaportOrderHash.sol       Seaport digest re-derivation
     script/DeployListoorVaultFactory.s.sol   CREATE3 deployment of the factory
     script/CreateVault.s.sol                 vault creation through the factory
@@ -82,7 +117,8 @@ salt seed on every chain** — the script aborts if the broadcaster does not mat
 forge script script/DeployListoorVaultFactory.s.sol --sig "predict(address,string)" \
   0xDEPLOYER listoor-vault-factory-v1 --rpc-url base
 
-# 2. Deploy the factory, per chain
+# 2. Deploy the factory, per chain. FACTORY_OWNER (default: the deployer) becomes the fee
+#    admin and initial fee recipient
 forge script script/DeployListoorVaultFactory.s.sol --rpc-url base --account deployer \
   --broadcast --verify
 
@@ -117,6 +153,8 @@ Everything below is called on the vault by its owner.
    defaults do not fit the marketplace's fee structure.
 7. Move the NFTs and WETH in, then point the keeper at the vault and watch it in dry-run mode before
    letting it post orders.
+8. Before the trial runs out, `extendSubscription` from any wallet or `renewSubscription` from the
+   vault's own balance.
 
 ## Signature blob
 

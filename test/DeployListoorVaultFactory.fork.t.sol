@@ -14,6 +14,7 @@ contract DeployListoorVaultFactoryForkTest is BaseFork {
     DeployListoorVaultFactory internal deployScript;
     ICreateX internal createX;
     address internal deployer = makeAddr("deployer");
+    address internal factoryOwner = makeAddr("factoryOwner");
 
     function setUp() public {
         forkBase();
@@ -24,22 +25,24 @@ contract DeployListoorVaultFactoryForkTest is BaseFork {
     function test_deploysAtPredictedAddress() public {
         address predicted = deployScript.predict(deployer, SEED);
 
-        address factory = _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT);
+        address factory = _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
 
         assertEq(factory, predicted);
         assertEq(ListoorVaultFactory(factory).seaport(), address(SEAPORT));
         assertEq(ListoorVaultFactory(factory).conduit(), OPENSEA_CONDUIT);
+        assertEq(ListoorVaultFactory(factory).owner(), factoryOwner);
     }
 
     /// @dev The whole point of CREATE3: chain and constructor arguments do not move the address, so
     ///      each chain's own Seaport and conduit can be baked in.
     function test_sameAddressAcrossChainsAndConstructorArguments() public {
         uint256 beforeDeploy = vm.snapshotState();
-        address onBase = _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT);
+        address onBase = _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
 
         vm.revertToState(beforeDeploy);
         vm.chainId(1);
-        address onEthereum = _deploy(deployer, address(0x5EA), address(0xc0ffee));
+        address onEthereum =
+            _deploy(deployer, address(0x5EA), address(0xc0ffee), makeAddr("otherOwner"));
 
         assertEq(onEthereum, onBase);
     }
@@ -53,10 +56,11 @@ contract DeployListoorVaultFactoryForkTest is BaseFork {
     function test_strangerCannotOccupyTheAddress() public {
         address predicted = deployScript.predict(deployer, SEED);
 
-        address squatted = _deploy(makeAddr("stranger"), address(SEAPORT), OPENSEA_CONDUIT);
+        address squatted =
+            _deploy(makeAddr("stranger"), address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
 
         assertTrue(squatted != predicted);
-        assertEq(_deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT), predicted);
+        assertEq(_deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner), predicted);
     }
 
     function test_saltEncodesDeployerAndDisablesChainProtection() public view {
@@ -68,9 +72,12 @@ contract DeployListoorVaultFactoryForkTest is BaseFork {
     }
 
     /// @dev Salt and init code are resolved before the prank so that it lands on the deploy call.
-    function _deploy(address from, address seaport, address conduit) private returns (address) {
+    function _deploy(address from, address seaport, address conduit, address owner)
+        private
+        returns (address)
+    {
         bytes32 salt = deployScript.saltFor(deployer, SEED);
-        bytes memory initCode = deployScript.initCode(seaport, conduit);
+        bytes memory initCode = deployScript.initCode(seaport, conduit, owner);
 
         vm.prank(from);
         return createX.deployCreate3(salt, initCode);

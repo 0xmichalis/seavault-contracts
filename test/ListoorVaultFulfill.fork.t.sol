@@ -12,19 +12,23 @@ import {
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
 import {ListoorVault} from "../src/ListoorVault.sol";
+import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
 import {SeaportOrderHash} from "../src/libraries/SeaportOrderHash.sol";
 import {BaseFork} from "./helpers/BaseFork.sol";
 import {MockERC721} from "./mocks/TokenMocks.sol";
 
-/// @notice End-to-end fills against the real Seaport and OpenSea conduit: Seaport calls the vault's
-///         `isValidSignature`, the conduit moves the assets, and policy failures block the fill.
+/// @notice End-to-end fills against the real Seaport and OpenSea conduit, with the vault created
+///         through the factory: Seaport calls the vault's `isValidSignature`, the conduit moves the
+///         assets, and policy failures or a lapsed subscription block the fill.
 contract ListoorVaultFulfillForkTest is BaseFork {
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
     uint256 internal constant TOKEN_ID = 42;
     uint256 internal constant PRICE = 1 ether;
 
+    ListoorVaultFactory internal factory;
     ListoorVault internal vault;
     MockERC721 internal nft;
+    address internal factoryOwner = makeAddr("factoryOwner");
     address internal owner = makeAddr("owner");
     address internal taker = makeAddr("taker");
     address internal keeper;
@@ -34,7 +38,13 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         forkBase();
         (keeper, keeperPk) = makeAddrAndKey("keeper");
         nft = new MockERC721();
-        vault = new ListoorVault(address(SEAPORT), OPENSEA_CONDUIT, owner, keeper);
+        factory = new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        // Short trial so the lapse test can warp past it without outliving its order. Irrelevant to
+        // the rest of the suite: while the price is zero every vault counts as subscribed.
+        vm.prank(factoryOwner);
+        factory.setTrialPeriod(1 hours);
+        vm.prank(owner);
+        vault = factory.createVault(keccak256("fulfill"), keeper);
 
         vm.startPrank(owner);
         vault.setPaymentTokenAllowed(vault.NATIVE_TOKEN(), true);
@@ -68,6 +78,30 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         vm.expectRevert(abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, PRICE, 1 wei));
         vm.prank(taker);
         SEAPORT.fulfillOrder{value: 1 wei}(order, bytes32(0));
+    }
+
+    /// @dev A lapsed subscription kills live orders too, and paying revives them without resigning.
+    function test_lapsedSubscriptionBlocksFillUntilRenewed() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.01 ether);
+
+        nft.mint(address(vault), TOKEN_ID);
+        OrderComponents memory components = _listing(PRICE);
+        components.endTime = block.timestamp + 2 hours; // outlives the trial
+        Order memory order = _signed(components);
+        vm.warp(factory.paidThrough(address(vault)) + 1);
+
+        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
+        vm.prank(taker);
+        SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
+
+        vm.deal(owner, 0.01 ether);
+        vm.prank(owner);
+        factory.extendSubscription{value: 0.01 ether}(address(vault), 1);
+
+        vm.prank(taker);
+        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0)));
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
     }
 
     function test_takerFillsVaultOffer() public {

@@ -15,7 +15,8 @@ import {ICreateX} from "../src/interfaces/ICreateX.sol";
 ///      cross-chain redeploy protection, which would mix `block.chainid` into the salt).
 ///
 ///      The factory address has to match across chains, because vault addresses are derived from it.
-///      Use the same deployer key and salt seed everywhere.
+///      Use the same deployer key and salt seed everywhere. `FACTORY_OWNER` (default: the deployer)
+///      becomes the fee admin and the initial fee recipient.
 ///
 ///      Deploy:
 ///        forge script script/DeployListoorVaultFactory.s.sol --rpc-url base --account deployer \
@@ -33,18 +34,20 @@ contract DeployListoorVaultFactory is Script {
     function run() external returns (ListoorVaultFactory factory) {
         address seaport = vm.envOr("SEAPORT", SEAPORT_V1_6);
         address conduit = vm.envOr("CONDUIT", OPENSEA_CONDUIT);
+        address owner = vm.envOr("FACTORY_OWNER", msg.sender);
         string memory saltSeed = vm.envOr("FACTORY_SALT_SEED", string(DEFAULT_SALT_SEED));
         address deployer = msg.sender;
         address predicted = predict(deployer, saltSeed);
 
         console2.log("chain id         ", block.chainid);
         console2.log("deployer         ", deployer);
+        console2.log("factory owner    ", owner);
         console2.log("salt seed        ", saltSeed);
         console2.log("predicted factory", predicted);
 
         vm.startBroadcast();
         factory = ListoorVaultFactory(
-            CREATE_X.deployCreate3(saltFor(deployer, saltSeed), initCode(seaport, conduit))
+            CREATE_X.deployCreate3(saltFor(deployer, saltSeed), initCode(seaport, conduit, owner))
         );
         vm.stopBroadcast();
 
@@ -59,9 +62,14 @@ contract DeployListoorVaultFactory is Script {
         return CREATE_X.computeCreate3Address(guardedSaltFor(deployer, saltSeed), address(CREATE_X));
     }
 
-    function initCode(address seaport, address conduit) public pure returns (bytes memory) {
-        return
-            abi.encodePacked(type(ListoorVaultFactory).creationCode, abi.encode(seaport, conduit));
+    function initCode(address seaport, address conduit, address owner)
+        public
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodePacked(
+            type(ListoorVaultFactory).creationCode, abi.encode(seaport, conduit, owner)
+        );
     }
 
     function saltFor(address deployer, string memory saltSeed) public pure returns (bytes32) {

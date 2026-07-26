@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+
 import {ListoorVault} from "../src/ListoorVault.sol";
 import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
 import {BaseFork} from "./helpers/BaseFork.sol";
@@ -11,6 +13,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
     bytes32 internal constant SALT = keccak256("primary");
 
     ListoorVaultFactory internal factory;
+    address internal factoryOwner = makeAddr("factoryOwner");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal aliceKeeper = makeAddr("aliceKeeper");
@@ -18,7 +21,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function setUp() public {
         forkBase();
-        factory = new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT);
+        factory = new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
     }
 
     function test_createsVaultOwnedByCaller() public {
@@ -32,6 +35,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
         assertEq(vault.keeper(), aliceKeeper);
         assertEq(address(vault.seaport()), address(SEAPORT));
         assertEq(vault.conduit(), OPENSEA_CONDUIT);
+        assertEq(address(vault.subscriptions()), address(factory));
     }
 
     function test_registersVaultForLookup() public {
@@ -93,7 +97,8 @@ contract ListoorVaultFactoryForkTest is BaseFork {
     /// @dev Two factories cannot land on the same vault address, so a redeployed factory (new
     ///      Seaport, say) yields a fresh set of vaults rather than colliding with the old ones.
     function test_vaultAddressIsScopedToTheFactory() public {
-        ListoorVaultFactory other = new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT);
+        ListoorVaultFactory other =
+            new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
 
         assertTrue(factory.predictVault(alice, SALT) != other.predictVault(alice, SALT));
     }
@@ -126,10 +131,48 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function test_rejectsZeroAddressesAtDeployment() public {
         vm.expectRevert(ListoorVaultFactory.ZeroAddress.selector);
-        new ListoorVaultFactory(address(0), OPENSEA_CONDUIT);
+        new ListoorVaultFactory(address(0), OPENSEA_CONDUIT, factoryOwner);
 
         vm.expectRevert(ListoorVaultFactory.ZeroAddress.selector);
-        new ListoorVaultFactory(address(SEAPORT), address(0));
+        new ListoorVaultFactory(address(SEAPORT), address(0), factoryOwner);
+
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
+        new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT, address(0));
+    }
+
+    /// @dev A new vault starts inside a trial window, so it can trade before anyone pays.
+    function test_createdVaultStartsOnATrial() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.05 ether);
+
+        vm.prank(alice);
+        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+
+        assertEq(factory.paidThrough(address(vault)), block.timestamp + factory.trialPeriod());
+        assertTrue(factory.isSubscribed(address(vault)));
+
+        vm.warp(block.timestamp + factory.trialPeriod() + 1);
+        assertFalse(factory.isSubscribed(address(vault)));
+    }
+
+    /// @dev A vault can renew itself out of its own proceeds.
+    function test_vaultRenewsItsOwnSubscription() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.05 ether);
+        vm.prank(alice);
+        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        vm.deal(address(vault), 1 ether);
+        uint256 trialExpiry = factory.paidThrough(address(vault));
+        uint256 treasuryBefore = factoryOwner.balance;
+
+        vm.prank(alice);
+        vault.renewSubscription(2);
+
+        assertEq(
+            factory.paidThrough(address(vault)), trialExpiry + 2 * factory.SUBSCRIPTION_PERIOD()
+        );
+        assertEq(factoryOwner.balance - treasuryBefore, 0.1 ether);
+        assertEq(address(vault).balance, 0.9 ether);
     }
 
     /// @dev A vault from the factory behaves exactly like a directly deployed one.

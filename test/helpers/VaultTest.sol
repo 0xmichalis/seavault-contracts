@@ -12,9 +12,12 @@ import {
 import {ListoorVault} from "../../src/ListoorVault.sol";
 import {SeaportOrderHash} from "../../src/libraries/SeaportOrderHash.sol";
 import {MockSeaport} from "../mocks/MockSeaport.sol";
+import {MockSubscriptionRegistry} from "../mocks/MockSubscriptionRegistry.sol";
 import {MockERC1155, MockERC721, MockWETH} from "../mocks/TokenMocks.sol";
 
 /// @notice Vault under a mocked Seaport, with builders for the order shapes OpenSea posts.
+/// @dev The subscription starts active, so suites that are not about it are unaffected; the
+///      subscription suite flips `subscriptions`.
 abstract contract VaultTest is Test {
     uint256 internal constant FLOOR = 1 ether;
     uint256 internal constant CEILING = 0.5 ether;
@@ -24,6 +27,7 @@ abstract contract VaultTest is Test {
 
     ListoorVault internal vault;
     MockSeaport internal seaport;
+    MockSubscriptionRegistry internal subscriptions;
     MockERC721 internal nft;
     MockERC1155 internal edition;
     MockWETH internal weth;
@@ -31,6 +35,7 @@ abstract contract VaultTest is Test {
     address internal conduit = makeAddr("conduit");
     address internal owner = makeAddr("owner");
     address internal feeRecipient = makeAddr("feeRecipient");
+    address internal treasury = makeAddr("treasury");
     address internal stranger = makeAddr("stranger");
     address internal keeper;
     uint256 internal keeperPk;
@@ -38,10 +43,11 @@ abstract contract VaultTest is Test {
     function setUp() public virtual {
         (keeper, keeperPk) = makeAddrAndKey("keeper");
         seaport = new MockSeaport();
+        subscriptions = new MockSubscriptionRegistry();
         nft = new MockERC721();
         edition = new MockERC1155();
         weth = new MockWETH();
-        vault = new ListoorVault(address(seaport), conduit, owner, keeper);
+        vault = new ListoorVault(address(seaport), conduit, owner, keeper, address(subscriptions));
 
         vm.startPrank(owner);
         vault.setPaymentTokenAllowed(vault.NATIVE_TOKEN(), true);
@@ -162,13 +168,22 @@ abstract contract VaultTest is Test {
     function withFee(ConsiderationItem[] memory consideration, address token, uint256 fee)
         internal
         view
-        returns (ConsiderationItem[] memory extended)
+        returns (ConsiderationItem[] memory)
     {
+        return withPayment(consideration, token, fee, feeRecipient);
+    }
+
+    function withPayment(
+        ConsiderationItem[] memory consideration,
+        address token,
+        uint256 amount,
+        address to
+    ) internal pure returns (ConsiderationItem[] memory extended) {
         extended = new ConsiderationItem[](consideration.length + 1);
         for (uint256 i; i < consideration.length; ++i) {
             extended[i] = consideration[i];
         }
-        extended[consideration.length] = payment(token, fee, feeRecipient);
+        extended[consideration.length] = payment(token, amount, to);
     }
 
     /*//////////////////////////////////////////////////////////////

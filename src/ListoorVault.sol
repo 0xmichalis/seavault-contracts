@@ -20,6 +20,7 @@ import {
     OrderComponents
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
+import {ISubscriptionRegistry} from "./interfaces/ISubscriptionRegistry.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 
@@ -38,6 +39,10 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      Worst case for a compromised keeper key is therefore a sale at the floor or a bid at the
 ///      ceiling, not asset theft. Floors are loss bounds, not live prices: repricing below a floor
 ///      needs an owner transaction.
+///
+///      Signing is also gated on the keeper service being paid for, which the vault checks against
+///      `subscriptions`. A lapse stops new orders and kills outstanding ones, but never touches
+///      custody: withdrawals, cancels and policy keep working, so a vault is never held hostage.
 contract ListoorVault is Ownable2Step, IERC1271 {
     using SafeERC20 for IERC20;
 
@@ -54,6 +59,9 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
     /// @notice The only operator the vault ever approves: Seaport's conduit for OpenSea's key.
     address public immutable conduit;
+
+    /// @notice Where the vault checks its keeper service is paid for, typically its factory.
+    ISubscriptionRegistry public immutable subscriptions;
 
     bytes32 private immutable seaportVersionHash;
 
@@ -107,6 +115,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error PriceBelowFloor(uint256 requiredProceeds, uint256 proceeds);
     error PriceAboveCeiling(uint256 maxSpend, uint256 spend);
     error FeeShareTooHigh(uint256 fees, uint256 total);
+    error SubscriptionInactive();
     error ItemNotReceivedByVault(address recipient);
     error NoNftConsideration();
     error NotOwnerOrKeeper(address caller);
@@ -118,10 +127,17 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         _;
     }
 
-    constructor(address seaport_, address conduit_, address owner_, address keeper_)
-        Ownable(owner_)
-    {
-        if (seaport_ == address(0) || conduit_ == address(0) || keeper_ == address(0)) {
+    constructor(
+        address seaport_,
+        address conduit_,
+        address owner_,
+        address keeper_,
+        address subscriptions_
+    ) Ownable(owner_) {
+        if (
+            seaport_ == address(0) || conduit_ == address(0) || keeper_ == address(0)
+                || subscriptions_ == address(0)
+        ) {
             revert ZeroAddress();
         }
 
@@ -135,6 +151,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
         seaport = ConsiderationInterface(seaport_);
         conduit = conduit_;
+        subscriptions = ISubscriptionRegistry(subscriptions_);
         seaportVersionHash = versionHash;
         keeper = keeper_;
         maxOrderDuration = DEFAULT_MAX_ORDER_DURATION;
@@ -162,6 +179,8 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         view
         returns (bytes4)
     {
+        if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
+
         (OrderComponents memory order, bytes memory orderSignature) =
             abi.decode(signature, (OrderComponents, bytes));
 
@@ -277,6 +296,14 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     function unwrapWETH(address weth, uint256 amount) external onlyOwnerOrKeeper {
         if (!paymentTokenAllowed[weth]) revert PaymentTokenNotAllowed(weth);
         IWETH(weth).withdraw(amount);
+    }
+
+    /// @notice Buys further subscription periods for this vault out of its own native balance.
+    /// @dev Owner only: letting the keeper spend vault funds, even on the service, would hand a
+    ///      compromised key a way to burn them. Keepers watch the expiry and raise the alarm instead.
+    function renewSubscription(uint256 periods) external onlyOwner {
+        uint256 cost = subscriptions.priceFor(address(this)) * periods;
+        subscriptions.extendSubscription{value: cost}(address(this), periods);
     }
 
     function withdrawETH(address to, uint256 amount) external onlyOwner {

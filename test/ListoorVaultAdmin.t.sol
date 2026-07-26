@@ -16,6 +16,7 @@ contract ListoorVaultAdminTest is VaultTest {
         assertEq(vault.conduit(), conduit);
         assertEq(vault.owner(), owner);
         assertEq(vault.keeper(), keeper);
+        assertEq(address(vault.subscriptions()), address(subscriptions));
         assertEq(vault.maxOrderDuration(), 30 days);
         assertEq(vault.maxFeeBps(), 1000);
 
@@ -34,21 +35,24 @@ contract ListoorVaultAdminTest is VaultTest {
                 keccak256("not seaport")
             )
         );
-        new ListoorVault(address(impostor), conduit, owner, keeper);
+        new ListoorVault(address(impostor), conduit, owner, keeper, address(subscriptions));
     }
 
     function test_rejectsZeroAddressesAtDeployment() public {
         vm.expectRevert(ListoorVault.ZeroAddress.selector);
-        new ListoorVault(address(0), conduit, owner, keeper);
+        new ListoorVault(address(0), conduit, owner, keeper, address(subscriptions));
 
         vm.expectRevert(ListoorVault.ZeroAddress.selector);
-        new ListoorVault(address(seaport), address(0), owner, keeper);
+        new ListoorVault(address(seaport), address(0), owner, keeper, address(subscriptions));
 
         vm.expectRevert(ListoorVault.ZeroAddress.selector);
-        new ListoorVault(address(seaport), conduit, owner, address(0));
+        new ListoorVault(address(seaport), conduit, owner, address(0), address(subscriptions));
+
+        vm.expectRevert(ListoorVault.ZeroAddress.selector);
+        new ListoorVault(address(seaport), conduit, owner, keeper, address(0));
 
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-        new ListoorVault(address(seaport), conduit, address(0), keeper);
+        new ListoorVault(address(seaport), conduit, address(0), keeper, address(subscriptions));
     }
 
     /*//////////////////////////////////////////////////////////////
