@@ -1,0 +1,39 @@
+name: CI
+
+on:
+    push:
+        branches: [main] # Trigger on main branch pushes
+    pull_request:
+        branches: [main] # Trigger on PRs targeting main
+    workflow_dispatch: # Manual trigger
+
+jobs:
+    test:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Foundry
+              uses: foundry-rs/foundry-toolchain@v1
+              with:
+                  version: stable
+
+            - name: Install dependencies
+              run: forge soldeer install
+
+            - name: Check formatting
+              run: forge fmt --check
+
+            - name: Lint
+              run: forge lint
+
+            - name: Build
+              run: forge build --sizes
+
+            - name: Test
+              # Fork tests need an RPC endpoint and skip themselves without one. The public endpoint
+              # keeps them running by default; set a BASE_RPC_URL secret to use a private provider.
+              run: forge test -vvv
+              env:
+                  BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}

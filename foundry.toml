@@ -1,0 +1,62 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+script = "script"
+libs = ["lib", "dependencies"]
+solc = "0.8.28"
+# Every chain these contracts target (ethereum, base, arbitrum, optimism, matic,
+# zora, shape) executes Cancun opcodes — verified by eth_call'ing MCOPY on each.
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1_000_000
+# Maintained by hand so imports stay free of version numbers; versions are pinned
+# in [dependencies] and soldeer.lock.
+remappings = [
+    "@openzeppelin/contracts/=dependencies/@openzeppelin-contracts-5.6.1/",
+    "forge-std/=dependencies/forge-std-1.16.2/src/",
+    "seaport-types/=dependencies/seaport-types-1.6.3/",
+]
+
+[profile.default.fuzz]
+runs = 512
+
+[lint]
+# Deliberate deviations: ETH/WETH stay upper case, immutables exposed as getters keep getter names,
+# test fixtures build structs positionally, and hashing stays in Solidity rather than assembly.
+exclude_lints = [
+    "asm-keccak256",
+    "mixed-case-function",
+    "named-struct-fields",
+    "screaming-snake-case-immutable",
+]
+
+[fmt]
+line_length = 100
+tab_width = 4
+number_underscore = "thousands"
+sort_imports = true
+
+[rpc_endpoints]
+ethereum = "${ETHEREUM_RPC_URL}"
+base = "${BASE_RPC_URL}"
+arbitrum = "${ARBITRUM_RPC_URL}"
+optimism = "${OPTIMISM_RPC_URL}"
+matic = "${MATIC_RPC_URL}"
+zora = "${ZORA_RPC_URL}"
+shape = "${SHAPE_RPC_URL}"
+
+[etherscan]
+ethereum = { key = "${ETHERSCAN_API_KEY}", chain = 1 }
+base = { key = "${ETHERSCAN_API_KEY}", chain = 8453 }
+arbitrum = { key = "${ETHERSCAN_API_KEY}", chain = 42161 }
+optimism = { key = "${ETHERSCAN_API_KEY}", chain = 10 }
+matic = { key = "${ETHERSCAN_API_KEY}", chain = 137 }
+
+[soldeer]
+remappings_generate = false
+
+[dependencies]
+forge-std = "1.16.2"
+"@openzeppelin-contracts" = "5.6.1"
+seaport-types = { version = "1.6.3", git = "https://github.com/ProjectOpenSea/seaport-types.git", tag = "v1.6.3" }
