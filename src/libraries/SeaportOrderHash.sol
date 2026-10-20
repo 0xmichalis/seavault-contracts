@@ -37,6 +37,9 @@ library SeaportOrderHash {
         "OrderComponents(address offerer,address zone,OfferItem[] offer,ConsiderationItem[] consideration,uint8 orderType,uint256 startTime,uint256 endTime,bytes32 zoneHash,uint256 salt,bytes32 conduitKey,uint256 counter)ConsiderationItem(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount,address recipient)OfferItem(uint8 itemType,address token,uint256 identifierOrCriteria,uint256 startAmount,uint256 endAmount)"
     );
 
+    /// @dev What OpenSea has an offerer sign, under Seaport's domain, to cancel an order without gas.
+    bytes32 internal constant ORDER_HASH_TYPEHASH = keccak256("OrderHash(bytes32 orderHash)");
+
     /// @notice Derives Seaport's domain separator for the current chain.
     /// @dev Derived rather than cached because Seaport itself re-derives it when `block.chainid`
     ///      changes, so a cached copy would go stale on a chain fork.
@@ -111,5 +114,17 @@ library SeaportOrderHash {
         returns (bytes32)
     {
         return MessageHashUtils.toTypedDataHash(separator, hash(order));
+    }
+
+    /// @notice Derives the EIP-712 digest OpenSea has an offerer sign to cancel an order offchain.
+    /// @dev Its struct is `OrderHash`, not `OrderComponents`, so it never equals an order digest.
+    function cancellationDigest(bytes32 separator, bytes32 orderHash)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return MessageHashUtils.toTypedDataHash(
+            separator, keccak256(abi.encode(ORDER_HASH_TYPEHASH, orderHash))
+        );
     }
 }

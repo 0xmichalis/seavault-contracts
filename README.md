@@ -30,6 +30,11 @@ construction.
   validated or not. `incrementCounter` (owner) does the same without rotating, and `cancelOrders`
   (owner or keeper) retracts single orders. Cancel or bump after tightening policy if live orders
   have to obey it.
+- **Gasless cancels.** OpenSea cancels an order offchain once its offerer signs
+  `OrderHash(bytes32 orderHash)` under Seaport's domain, and the vault vouches for that signature
+  when its keeper made it. That digest types an `OrderHash`, never an order, so it cannot approve a
+  fill, and it keeps working through a lapse. OpenSea does not document verifying it through
+  EIP-1271, so a caller should fall back to `cancelOrders` when OpenSea refuses.
 - Residual risk: the keeper key can sell at the floor or bid at the ceiling. **Floors are loss bounds,
   not live prices** — repricing below a floor needs an owner transaction.
 - Only the owner can move assets, and the only operator ever approved is Seaport's conduit.
@@ -187,6 +192,10 @@ const signature = AbiCoder.defaultAbiCoder().encode(
 
 Sign orders one at a time. Seaport hands the vault the single-order digest, so a signature over a
 bulk-order root never verifies.
+
+For a gasless cancel, the keeper signs OpenSea's `OrderHash` message instead and sends
+`abi.encode(orderHash, ecdsaSignature)` as the `offererSignature`. `cancellationDigest(orderHash)`
+on the vault returns what it has to sign.
 
 Two things about how the orderbook API treats these signatures, established by probing it directly:
 

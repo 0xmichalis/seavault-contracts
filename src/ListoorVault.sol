@@ -174,25 +174,45 @@ contract ListoorVault is Ownable2Step, IERC1271 {
                             ORDER VALIDATION
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Validates a Seaport order signed by the keeper key against owner-set policy.
-    /// @param digest EIP-712 digest Seaport derived for the order it is about to fulfill.
+    /// @notice Validates a Seaport order signed by the keeper key against owner-set policy, or the
+    ///         keeper's sign-off on cancelling an order through OpenSea without gas.
+    /// @param digest EIP-712 digest Seaport derived for the order it is about to fulfill, or the
+    ///        `cancellationDigest` OpenSea checks before cancelling an order offchain.
     /// @param signature `abi.encode(OrderComponents, bytes)`: the order behind `digest` and the keeper
-    ///        key's ECDSA signature over it.
+    ///        key's ECDSA signature over it. For a cancellation, `abi.encode(orderHash, bytes)`.
     /// @dev Reverts rather than returning a non-magic value, so failures surface with a reason.
     ///      Orders must be signed one at a time: Seaport hands contract signers the single-order
     ///      digest, so a keeper signature over a bulk-order root never verifies. The encoding is
     ///      word-aligned, so Seaport never mistakes it for a bulk-order proof either.
+    ///
+    ///      A cancellation digest hashes an `OrderHash` struct, never an order, so vouching for one
+    ///      approves that cancellation and nothing Seaport could fill. That is why it skips policy
+    ///      and keeps working through a lapse, like every other way out.
     function isValidSignature(bytes32 digest, bytes calldata signature)
         external
         view
         returns (bytes4)
     {
+        bytes32 separator = seaportDomainSeparator();
+
+        // An order blob opens with an ABI offset, which never hashes to the digest at hand.
+        if (
+            signature.length >= 32
+                && SeaportOrderHash.cancellationDigest(separator, bytes32(signature[:32])) == digest
+        ) {
+            (, bytes memory cancellationSignature) = abi.decode(signature, (bytes32, bytes));
+            if (ECDSA.recover(digest, cancellationSignature) != keeper) {
+                revert UnauthorizedSigner();
+            }
+            return IERC1271.isValidSignature.selector;
+        }
+
         if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
 
         (OrderComponents memory order, bytes memory orderSignature) =
             abi.decode(signature, (OrderComponents, bytes));
 
-        if (SeaportOrderHash.digest(seaportDomainSeparator(), order) != digest) {
+        if (SeaportOrderHash.digest(separator, order) != digest) {
             revert DigestMismatch();
         }
         if (ECDSA.recover(digest, orderSignature) != keeper) revert UnauthorizedSigner();
@@ -205,6 +225,12 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice Seaport's EIP-712 domain separator on this chain.
     function seaportDomainSeparator() public view returns (bytes32) {
         return SeaportOrderHash.domainSeparator(address(seaport), seaportVersionHash);
+    }
+
+    /// @notice What OpenSea has the offerer sign to cancel one of its orders without gas, i.e.
+    ///         `OrderHash(bytes32 orderHash)` under Seaport's domain.
+    function cancellationDigest(bytes32 orderHash) external view returns (bytes32) {
+        return SeaportOrderHash.cancellationDigest(seaportDomainSeparator(), orderHash);
     }
 
     /// @notice Minimum proceeds per unit for a token, per-token override taking precedence, and
