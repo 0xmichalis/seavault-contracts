@@ -166,7 +166,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
         uint256 treasuryBefore = factoryOwner.balance;
 
         vm.prank(alice);
-        vault.renewSubscription(2);
+        vault.renewSubscription(2, 0.1 ether);
 
         assertEq(
             factory.paidThrough(address(vault)), trialExpiry + 2 * factory.SUBSCRIPTION_PERIOD()

@@ -20,15 +20,24 @@ construction.
 - Policy is then enforced on them: per-collection (optionally per-token) **listing floors**,
   per-collection **offer ceilings**, a payment-token allowlist, a cap on the share of a sale that may
   go to non-vault recipients, and a maximum order duration.
-- Seaport validates signatures at fulfillment time, so `setKeeper` revokes every outstanding order
-  at once. `cancelOrders` (owner or keeper) and `incrementCounter` (owner) are the on-chain equivalents.
+- A collection never sells below its ceiling: floors under it are raised to it. Otherwise a
+  compromised keeper could buy at the ceiling and sell back at the floor on repeat. Bidding needs no
+  floor.
+- **Seaport stops asking the vault once an order is validated on-chain or partially filled.** Anyone
+  can validate a posted order with its signature, and collection offers with a quantity fill
+  partially as a matter of course. Policy changes and subscription lapses do not reach those orders.
+- `setKeeper` bumps the vault's Seaport counter, so it revokes every outstanding order at once,
+  validated or not. `incrementCounter` (owner) does the same without rotating, and `cancelOrders`
+  (owner or keeper) retracts single orders. Cancel or bump after tightening policy if live orders
+  have to obey it.
 - Residual risk: the keeper key can sell at the floor or bid at the ceiling. **Floors are loss bounds,
   not live prices** — repricing below a floor needs an owner transaction.
 - Only the owner can move assets, and the only operator ever approved is Seaport's conduit.
 
 Amounts are enforced per unit offered, because partial fills settle pro rata. Bundles sum the floors
-(or ceilings) of every item. Variable-amount items are measured pessimistically: vault proceeds at
-their lowest point, fees and vault spend at their highest.
+(or ceilings) of every item. Variable-amount items are measured pessimistically: vault proceeds
+and the NFTs it receives at their lowest point; fees, the NFTs it sells and its spend at their
+highest.
 
 ## Subscription
 
@@ -46,11 +55,13 @@ Instead the factory doubles as a subscription registry, and the vault checks it 
   each. Anyone may pay for any vault; payment must be exact and is forwarded to
   `subscriptionRecipient` on the spot. Paying early stacks onto the current expiry rather than
   discarding it; paying after a lapse starts from the moment of payment.
-- `renewSubscription(periods)` on the vault does the same out of the vault's own balance. Owner only:
+- `renewSubscription(periods, maxCost)` on the vault does the same out of the vault's own balance,
+  and reverts if a price change has pushed the cost above `maxCost`. Owner only:
   letting the keeper spend vault funds — even on the service — hands a compromised key a way to burn
   them. Keepers should watch `paidThrough` and raise the alarm instead.
 - **A lapse stops signing, nothing else.** `isValidSignature` reverts with `SubscriptionInactive`, so
-  new orders cannot be made and outstanding ones stop filling. Withdrawals, cancels,
+  new orders cannot be made and outstanding ones stop filling, except orders Seaport has already
+  validated or partially filled. Withdrawals, cancels,
   `incrementCounter` and every policy setter keep working, so a vault is never held hostage. Paying
   revives outstanding orders without resigning them.
 - **Paid time can only grow.** There is no code path that shortens `paidThrough`; raising the price or
@@ -146,11 +157,14 @@ Everything below is called on the vault by its owner.
 1. `setPaymentTokenAllowed(address(0), true)` for native ETH and `setPaymentTokenAllowed(WETH, true)`.
 2. `setListingFloor(collection, floorPerUnit)`, plus `setTokenListingFloor` where a token needs its
    own bound. A collection with no floor cannot be listed at all.
-3. `setOfferCeiling(collection, ceilingPerUnit)` for collections the keeper may bid on.
+3. `setOfferCeiling(collection, ceilingPerUnit)` for collections the keeper may bid on. Listings in
+   that collection then have to clear the ceiling as well as the floor.
 4. `setConduitApprovalForAll(collection, true)` for every collection the vault sells from.
-5. `setConduitAllowance(WETH, amount)` if the vault will bid.
+5. `setConduitAllowance(WETH, amount)` if the vault will bid. Keep it finite: it is the hard cap on
+   what a compromised keeper can spend, and the keeper can wrap the vault's native balance into WETH.
 6. Adjust `setMaxOrderDuration` (default 30 days) and `setMaxFeeBps` (default 1000 = 10%) if the
-   defaults do not fit the marketplace's fee structure.
+   defaults do not fit the marketplace's fee structure. The keeper should read `maxFeeBps` before
+   posting: a listing whose marketplace fee plus creator earnings exceed it fails validation.
 7. Move the NFTs and WETH in, then point the keeper at the vault and watch it in dry-run mode before
    letting it post orders.
 8. Before the trial runs out, `extendSubscription` from any wallet or `renewSubscription` from the
@@ -171,8 +185,8 @@ const signature = AbiCoder.defaultAbiCoder().encode(
 );
 ```
 
-Sign orders one at a time. Seaport reads bulk-order proofs out of the signature itself, and a bulk
-signature would make the vault re-derive a digest that no longer matches.
+Sign orders one at a time. Seaport hands the vault the single-order digest, so a signature over a
+bulk-order root never verifies.
 
 Two things about how the orderbook API treats these signatures, established by probing it directly:
 

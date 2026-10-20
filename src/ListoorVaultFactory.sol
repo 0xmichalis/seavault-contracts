@@ -88,6 +88,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
     error SubscriptionNotRequired(address vault);
     error NoPeriods();
     error IncorrectPayment(uint256 expected, uint256 provided);
+    error OwnershipCannotBeRenounced();
 
     /// @dev The subscription ships free, so the factory is usable the moment it is deployed; the
     ///      owner sets a price when the service starts charging.
@@ -201,6 +202,12 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
     function setTrialPeriod(uint256 newTrialPeriod) external onlyOwner {
         trialPeriod = newTrialPeriod;
         emit TrialPeriodUpdated(newTrialPeriod);
+    }
+
+    /// @dev Disabled: renouncing would freeze the price and the recipient for good, so a recipient
+    ///      that stops accepting payments would lapse every priced vault permanently.
+    function renounceOwnership() public pure override {
+        revert OwnershipCannotBeRenounced();
     }
 
     /// @dev `bytes20(this) ++ 0x00 ++ owner-and-salt digest`: permissioned to this factory, with

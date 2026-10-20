@@ -120,6 +120,8 @@ contract ListoorVaultFulfillForkTest is BaseFork {
     }
 
     /// @dev Signature validation happens at fill time, so rotating the signer kills live orders.
+    ///      Rotation also bumps the counter, so Seaport derives a digest the signed components no
+    ///      longer hash to.
     function test_rotatingSignerKillsLiveListing() public {
         nft.mint(address(vault), TOKEN_ID);
         Order memory order = _signed(_listing(PRICE));
@@ -127,9 +129,26 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         vm.prank(owner);
         vault.setKeeper(makeAddr("newKeeper"));
 
-        vm.expectRevert(ListoorVault.UnauthorizedSigner.selector);
+        vm.expectRevert(ListoorVault.DigestMismatch.selector);
         vm.prank(taker);
         SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
+    }
+
+    /// @dev Seaport stops asking the vault about an order once it is validated, which anyone can do
+    ///      with the posted signature, or once it is partially filled. Only the counter reaches it.
+    function test_rotatingSignerKillsValidatedListing() public {
+        nft.mint(address(vault), TOKEN_ID);
+        Order[] memory orders = new Order[](1);
+        orders[0] = _signed(_listing(PRICE));
+        vm.prank(taker);
+        SEAPORT.validate(orders);
+
+        vm.prank(owner);
+        vault.setKeeper(makeAddr("newKeeper"));
+
+        vm.expectRevert(ListoorVault.DigestMismatch.selector);
+        vm.prank(taker);
+        SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0));
     }
 
     /// @dev And so does an on-chain cancel, which the keeper key is allowed to send.

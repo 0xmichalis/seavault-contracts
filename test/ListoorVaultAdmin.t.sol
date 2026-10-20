@@ -76,6 +76,15 @@ contract ListoorVaultAdminTest is VaultTest {
         vault.setKeeper(address(0));
     }
 
+    /// @dev Seaport skips the vault for orders it has already validated or partially filled, so
+    ///      rotation bumps the counter to revoke those too.
+    function test_setKeeperIncrementsSeaportCounter() public {
+        vm.prank(owner);
+        vault.setKeeper(makeAddr("newKeeper"));
+
+        assertEq(seaport.getCounter(address(vault)), 1);
+    }
+
     function test_setPolicy() public {
         vm.startPrank(owner);
         vault.setListingFloor(address(nft), 5 ether);

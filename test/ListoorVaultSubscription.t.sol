@@ -94,12 +94,26 @@ contract ListoorVaultSubscriptionTest is VaultTest {
         vm.deal(address(vault), 1 ether);
 
         vm.prank(owner);
-        vault.renewSubscription(3);
+        vault.renewSubscription(3, 0.03 ether);
 
         assertEq(subscriptions.periodsBought(), 3);
         assertEq(address(subscriptions).balance, 0.03 ether);
         assertEq(address(vault).balance, 0.97 ether);
         assertEq(validate(listing(FLOOR)), MAGIC_VALUE);
+    }
+
+    /// @dev A price change that lands before the renewal cannot take more than the owner agreed to.
+    function test_renewalRevertsAboveMaxCost() public {
+        subscriptions.set(false, 0.01 ether);
+        vm.deal(address(vault), 1 ether);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ListoorVault.SubscriptionCostAboveMax.selector, 0.03 ether, 0.02 ether
+            )
+        );
+        vm.prank(owner);
+        vault.renewSubscription(3, 0.02 ether);
     }
 
     /// @dev Keeper-callable renewal would hand a compromised key a way to burn vault funds.
@@ -109,7 +123,7 @@ contract ListoorVaultSubscriptionTest is VaultTest {
 
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, keeper));
         vm.prank(keeper);
-        vault.renewSubscription(1);
+        vault.renewSubscription(1, 0.01 ether);
     }
 
     function test_renewalRevertsWithoutFunds() public {
@@ -117,6 +131,6 @@ contract ListoorVaultSubscriptionTest is VaultTest {
 
         vm.expectRevert();
         vm.prank(owner);
-        vault.renewSubscription(1);
+        vault.renewSubscription(1, 1 ether);
     }
 }

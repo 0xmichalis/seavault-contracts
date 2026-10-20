@@ -24,6 +24,22 @@ contract ListoorVaultOfferTest is VaultTest {
         assertEq(validate(offer(CEILING / 2)), MAGIC_VALUE);
     }
 
+    /// @dev Bidding never needs a floor: an unlistable collection cannot be cycled, so it is safe.
+    function test_acceptsOfferOnCollectionWithoutFloor() public {
+        vm.prank(owner);
+        vault.setListingFloor(address(nft), 0);
+
+        assertEq(validate(offer(CEILING)), MAGIC_VALUE);
+    }
+
+    /// @dev The floor-ceiling rule is enforced on the sale side, where the token is known.
+    function test_acceptsOfferAboveCollectionFloor() public {
+        vm.prank(owner);
+        vault.setOfferCeiling(address(nft), FLOOR * 2);
+
+        assertEq(validate(offer(FLOOR * 2)), MAGIC_VALUE);
+    }
+
     function test_rejectsOfferAboveCeiling() public {
         expectRevertOn(
             abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, CEILING + 1),
@@ -111,6 +127,28 @@ contract ListoorVaultOfferTest is VaultTest {
         order.consideration[0].identifierOrCriteria = uint256(keccak256("merkle root"));
 
         assertEq(validate(order), MAGIC_VALUE);
+    }
+
+    /// @dev A falling unit count has to stay under the ceiling at its lowest point, or a late fill
+    ///      pays the full offer for fewer units.
+    function test_fallingUnitCountMustStayUnderCeilingAtItsLowest() public {
+        OrderComponents memory order = criteriaOffer(CEILING * 3, 3);
+        order.consideration[0].endAmount = 1;
+
+        expectRevertOn(
+            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, CEILING * 3),
+            order
+        );
+    }
+
+    /// @dev A unit count that decays to zero bounds nothing, since Seaport rounds it up to one token
+    ///      right before expiry.
+    function test_rejectsUnitCountDecayingToZero() public {
+        OrderComponents memory order = offer(CEILING * 10);
+        order.consideration[0].startAmount = 10;
+        order.consideration[0].endAmount = 0;
+
+        expectRevertOn(abi.encodeWithSelector(ListoorVault.NoNftConsideration.selector), order);
     }
 
     /// @dev A rising amount has to stay under the ceiling at its highest point.

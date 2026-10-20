@@ -25,7 +25,9 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
         period = factory.SUBSCRIPTION_PERIOD();
         // `createVault` needs CreateX, which only exists on a fork, so registration is written
         // directly here. Slot is located by probing rather than hardcoded.
-        stdstore.target(address(factory)).sig(factory.isVault.selector).with_key(vault)
+        stdstore.target(address(factory))
+            .sig(factory.isVault.selector)
+            .with_key(vault)
             .checked_write(true);
         vm.deal(payer, 100 ether);
     }
@@ -75,6 +77,16 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
         vm.expectRevert(unauthorized);
         factory.setTrialPeriod(1 days);
         vm.stopPrank();
+    }
+
+    /// @dev Renouncing would freeze the price and the recipient; a recipient that stops accepting
+    ///      payments would then lapse every vault for good.
+    function test_ownershipCannotBeRenounced() public {
+        vm.expectRevert(ListoorVaultFactory.OwnershipCannotBeRenounced.selector);
+        vm.prank(factoryOwner);
+        factory.renounceOwnership();
+
+        assertEq(factory.owner(), factoryOwner);
     }
 
     /*//////////////////////////////////////////////////////////////

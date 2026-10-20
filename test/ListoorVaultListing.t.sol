@@ -158,6 +158,42 @@ contract ListoorVaultListingTest is VaultTest {
         );
     }
 
+    /// @dev A collection the vault may bid on never sells below the ceiling, or a compromised keeper
+    ///      could buy at the ceiling and sell back at the floor on repeat.
+    function test_listingMustClearCeilingWhenAboveFloor() public {
+        vm.prank(owner);
+        vault.setOfferCeiling(address(nft), FLOOR * 2);
+
+        expectRevertOn(
+            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR * 2, FLOOR * 2 - 1),
+            listing(FLOOR * 2 - 1)
+        );
+        assertEq(validate(listing(FLOOR * 2)), MAGIC_VALUE);
+    }
+
+    /// @dev Per-token floors are raised the same way, so none can undercut the ceiling.
+    function test_ceilingRaisesEveryFloorBelowIt() public {
+        vm.startPrank(owner);
+        vault.setOfferCeiling(address(nft), FLOOR * 2);
+        vault.setTokenListingFloor(address(nft), TOKEN_ID, FLOOR / 2);
+        vm.stopPrank();
+
+        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID), FLOOR * 2);
+        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID + 1), FLOOR * 2);
+    }
+
+    /// @dev A ceiling alone does not make a collection listable.
+    function test_ceilingDoesNotMakeACollectionListable() public {
+        vm.prank(owner);
+        vault.setListingFloor(address(nft), 0);
+
+        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID), 0);
+        expectRevertOn(
+            abi.encodeWithSelector(ListoorVault.CollectionNotListable.selector, address(nft)),
+            listing(FLOOR)
+        );
+    }
+
     function test_rejectsNonPaymentConsideration() public {
         OrderComponents memory order = listing(FLOOR);
         order.consideration[0] =

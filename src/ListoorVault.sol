@@ -28,8 +28,8 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 /// @notice Custody for NFTs and wrapped native tokens that authorizes a hot "keeper" key to sign
 ///         Seaport orders on its behalf via EIP-1271, so the key trading the assets never owns them.
 /// @dev The keeper key never moves assets: it can only produce signatures that Seaport accepts, and
-///      only for orders that satisfy owner-set policy. Since Seaport validates signatures at
-///      fulfillment time, rotating `keeper` revokes every outstanding order at once.
+///      only for orders that satisfy owner-set policy. Rotating `keeper` also bumps the vault's
+///      Seaport counter, which revokes every outstanding order at once.
 ///
 ///      A digest alone says nothing about what is being sold, so the signature blob carries the
 ///      order components next to the ECDSA signature and the digest is re-derived from them. Once
@@ -37,12 +37,18 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      Seaport is about to execute and policy can be enforced against them.
 ///
 ///      Worst case for a compromised keeper key is therefore a sale at the floor or a bid at the
-///      ceiling, not asset theft. Floors are loss bounds, not live prices: repricing below a floor
-///      needs an owner transaction.
+///      ceiling, not asset theft. A collection never sells below its ceiling, so the two bounds
+///      cannot be cycled against each other. Floors are loss bounds, not live prices: repricing
+///      below a floor needs an owner transaction.
+///
+///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
+///      on-chain, which anyone can do with its signature, or partially filled. Policy changes and
+///      subscription lapses reach those orders only through a cancel or a counter bump.
 ///
 ///      Signing is also gated on the keeper service being paid for, which the vault checks against
-///      `subscriptions`. A lapse stops new orders and kills outstanding ones, but never touches
-///      custody: withdrawals, cancels and policy keep working, so a vault is never held hostage.
+///      `subscriptions`. A lapse stops new orders and kills outstanding ones Seaport still checks,
+///      but never touches custody: withdrawals, cancels and policy keep working, so a vault is
+///      never held hostage.
 contract ListoorVault is Ownable2Step, IERC1271 {
     using SafeERC20 for IERC20;
 
@@ -85,6 +91,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         tokenListingFloor;
 
     /// @notice Maximum the vault may bid per unit, per collection. Zero makes a collection unbiddable.
+    ///         Listing floors in the collection are raised to it.
     mapping(address collection => uint256 ceilingPerUnit) public offerCeiling;
 
     event KeeperUpdated(address keeper);
@@ -116,6 +123,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error PriceAboveCeiling(uint256 maxSpend, uint256 spend);
     error FeeShareTooHigh(uint256 fees, uint256 total);
     error SubscriptionInactive();
+    error SubscriptionCostAboveMax(uint256 cost, uint256 maxCost);
     error ItemNotReceivedByVault(address recipient);
     error NoNftConsideration();
     error NotOwnerOrKeeper(address caller);
@@ -171,9 +179,9 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @param signature `abi.encode(OrderComponents, bytes)`: the order behind `digest` and the keeper
     ///        key's ECDSA signature over it.
     /// @dev Reverts rather than returning a non-magic value, so failures surface with a reason.
-    ///      Orders must be signed one at a time. Seaport reads bulk-order proofs out of the
-    ///      signature itself and derives a different digest from them; this encoding is always
-    ///      word-aligned and therefore never lands in the length window Seaport treats that way.
+    ///      Orders must be signed one at a time: Seaport hands contract signers the single-order
+    ///      digest, so a keeper signature over a bulk-order root never verifies. The encoding is
+    ///      word-aligned, so Seaport never mistakes it for a bulk-order proof either.
     function isValidSignature(bytes32 digest, bytes calldata signature)
         external
         view
@@ -199,19 +207,28 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         return SeaportOrderHash.domainSeparator(address(seaport), seaportVersionHash);
     }
 
-    /// @notice Minimum proceeds per unit for a token, per-token override taking precedence.
+    /// @notice Minimum proceeds per unit for a token, per-token override taking precedence, and
+    ///         never below the collection's offer ceiling. Zero means the token cannot be listed.
+    /// @dev The ceiling bound keeps a compromised keeper from buying at the ceiling and selling back
+    ///      at a lower floor on repeat. Bidding itself never needs a floor.
     function listingFloorFor(address collection, uint256 tokenId) public view returns (uint256) {
         uint256 floorPerUnit = tokenListingFloor[collection][tokenId];
-        return floorPerUnit == 0 ? listingFloor[collection] : floorPerUnit;
+        if (floorPerUnit == 0) floorPerUnit = listingFloor[collection];
+        return floorPerUnit == 0 ? 0 : Math.max(floorPerUnit, offerCeiling[collection]);
     }
 
     /*//////////////////////////////////////////////////////////////
                                  POLICY
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Swaps the signing key and revokes every order the vault has signed so far.
+    /// @dev The counter bump is what revokes them: Seaport stops asking the vault about an order once
+    ///      it is validated on-chain or partially filled, so the signer check alone would leave those
+    ///      live under the old key.
     function setKeeper(address newKeeper) external onlyOwner {
         if (newKeeper == address(0)) revert ZeroAddress();
         keeper = newKeeper;
+        seaport.incrementCounter();
         emit KeeperUpdated(newKeeper);
     }
 
@@ -299,10 +316,12 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     }
 
     /// @notice Buys further subscription periods for this vault out of its own native balance.
+    /// @param maxCost Most the owner agrees to pay, so a price change landing first cannot take more.
     /// @dev Owner only: letting the keeper spend vault funds, even on the service, would hand a
     ///      compromised key a way to burn them. Keepers watch the expiry and raise the alarm instead.
-    function renewSubscription(uint256 periods) external onlyOwner {
+    function renewSubscription(uint256 periods, uint256 maxCost) external onlyOwner {
         uint256 cost = subscriptions.priceFor(address(this)) * periods;
+        if (cost > maxCost) revert SubscriptionCostAboveMax(cost, maxCost);
         subscriptions.extendSubscription{value: cost}(address(this), periods);
     }
 
@@ -434,7 +453,8 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
             uint256 ceilingPerUnit = offerCeiling[item.token];
             if (ceilingPerUnit == 0) revert CollectionNotBiddable(item.token);
-            maxSpend += ceilingPerUnit * Math.max(item.startAmount, item.endAmount);
+            // Counted at its lowest: a late fill delivers whatever the amount has decayed to.
+            maxSpend += ceilingPerUnit * Math.min(item.startAmount, item.endAmount);
         }
 
         if (maxSpend == 0) revert NoNftConsideration();

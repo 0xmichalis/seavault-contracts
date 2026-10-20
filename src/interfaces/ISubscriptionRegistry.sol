@@ -4,8 +4,9 @@ pragma solidity 0.8.28;
 /// @notice Where a vault checks that its keeper service is paid for, typically the factory that
 ///         created it.
 /// @dev Read at validation time: a lapsed subscription stops the vault signing new orders and kills
-///      outstanding ones, while leaving withdrawals, cancels and policy untouched. Paid time can only
-///      be extended, never shortened, so a paid window is guaranteed by code.
+///      outstanding ones Seaport has not already validated or partially filled, while leaving
+///      withdrawals, cancels and policy untouched. Paid time can only be extended, never shortened,
+///      so a paid window is guaranteed by code.
 interface ISubscriptionRegistry {
     /// @notice Whether `vault` may sign orders right now. Always true where the price is zero.
     function isSubscribed(address vault) external view returns (bool);
