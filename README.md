@@ -155,6 +155,23 @@ vault salt gives the same owner an additional vault.
 `--verify` uses the `[etherscan]` config and a single `ETHERSCAN_API_KEY`. Zora and Shape are not on
 Etherscan; verify those with `--verifier blockscout --verifier-url <explorer>/api`.
 
+`--account` reads an encrypted keystore from disk. To keep keys off the filesystem altogether, use
+a hardware wallet (`--ledger`, `--trezor`) or `--browser`: forge serves a page on
+`localhost:9545`, you connect a browser wallet, and each transaction waits there for your
+signature. Forge connects before it simulates and takes the wallet's address as the sender, so the
+salt is built for that wallet. The page does not switch networks for you: switch the wallet to the
+target chain before pressing "Confirm Connection", because forge records the chain at that point
+and refuses to send if it differs from the `--rpc-url` chain.
+
+For a throwaway deployment, such as an end-to-end keeper test, give the factory a salt seed of its
+own. Under the default seed, a test factory from the production deployer takes the production
+address on that chain for good.
+
+```sh
+FACTORY_SALT_SEED=listoor-vault-factory-e2e-1 \
+  forge script script/DeployListoorVaultFactory.s.sol --rpc-url base --browser --broadcast
+```
+
 ## Post-deploy checklist, per chain
 
 Everything below is called on the vault by its owner.
