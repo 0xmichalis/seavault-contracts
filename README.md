@@ -1,6 +1,6 @@
 # listoor-contracts
 
-Non-custodial Seaport trading accounts for [listoor](https://github.com/0xmichalis/listoor).
+Non-custodial Seaport trading accounts.
 Owners deposit assets and set trading limits; a keeper signs orders and buys within those limits.
 Only the owner can withdraw assets.
 
