@@ -49,7 +49,9 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
     /// @notice Conduit every vault from this factory approves for settlement.
     address public immutable conduit;
 
-    /// @notice Vault deployed for an owner under a given salt, zero if not created yet.
+    /// @notice Vault deployed for an owner under a given salt, zero if not created yet. Keyed by the
+    ///         owner that created it: a later ownership transfer does not move it, so read the
+    ///         current owner from the vault itself. The same holds for `vaultsOf` and `vaultCount`.
     mapping(address owner => mapping(bytes32 salt => address vault)) public vaultOf;
 
     /// @notice Whether an address is a vault this factory deployed.

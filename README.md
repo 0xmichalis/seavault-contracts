@@ -35,7 +35,9 @@ construction.
   `OrderHash(bytes32 orderHash)` under Seaport's domain, and the vault vouches for that signature
   when its keeper made it. That digest types an `OrderHash`, never an order, so it cannot approve a
   fill, and it keeps working through a lapse. OpenSea does not document verifying it through
-  EIP-1271, so a caller should fall back to `cancelOrders` when OpenSea refuses.
+  EIP-1271, but accepts it for orders under its signed zone (checked live on Base). It refuses orders
+  younger than about five minutes and orders without a zone, which includes OpenSea listings; use
+  `cancelOrders` for those.
 - **Buys.** `buy(order, conduitKey)` (owner or keeper) fills someone else's listing through Seaport,
   with the vault paying and the owner receiving the NFTs in the same transaction. Everything paid,
   fees and tips included and counted at their highest, must fit within the offer ceilings of the
@@ -46,6 +48,12 @@ construction.
   owner transaction.
 - Only the owner can withdraw assets; the keeper only spends through Seaport, within the bounds
   above. The only operator ever approved is Seaport's conduit.
+- **Ownership moves in two steps**: `transferOwnership`, then `acceptOwnership` from the new wallet,
+  and the vault's assets move with it. Moving a vault between your own wallets keeps the keeper and
+  every order live. When it changes hands, the new owner calls `setKeeper` for their own key, which
+  also revokes every order the old keeper signed. The factory's `vaultOf`, `vaultsOf` and
+  `vaultCount` stay keyed by the wallet that created the vault, so read `owner()` on the vault to
+  know who holds it.
 
 Amounts are enforced per unit offered, because partial fills settle pro rata. Bundles sum the floors
 (or ceilings) of every item. Variable-amount items are measured pessimistically: vault proceeds
