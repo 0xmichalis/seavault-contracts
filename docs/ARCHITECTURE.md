@@ -54,7 +54,7 @@ construction.
   every order live. When it changes hands, the new owner calls `setKeeper` for their own key, which
   also revokes every order the old keeper signed. `vaultOf(creator, salt)` remains a creation
   lookup. The factory's `ownedVaultOf(owner)` maps each wallet to its single current vault. Creating
-  another or accepting another transfer while already owning a vault reverts. After transferring
+  another or accepting another transfer from the same factory while already owning a vault reverts. After transferring
   a vault away, the wallet may create a replacement with a fresh salt.
   `pendingVaultsOf(recipient, offset, limit)` discovers incoming transfer proposals in pages of
   at most 100 addresses. Proposals do not reserve the recipient's ownership slot or prevent creation.
