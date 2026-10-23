@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ItemType, OrderType} from "seaport-types/src/lib/ConsiderationEnums.sol";
 import {
+    AdvancedOrder,
     ConsiderationItem,
     OfferItem,
     Order,
@@ -53,6 +54,7 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         vault.setOfferCeiling(address(nft), PRICE);
         vault.setConduitApprovalForAll(address(nft), true);
         vault.setConduitAllowance(WETH, type(uint256).max);
+        vault.setNativeBuyAllowance(PRICE);
         vm.stopPrank();
 
         vm.deal(taker, 10 ether);
@@ -165,6 +167,86 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         vm.expectRevert();
         vm.prank(taker);
         SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
+    }
+
+    function test_keeperBuysListingForOwner() public {
+        (address seller, uint256 sellerPk) = makeAddrAndKey("seller");
+        nft.mint(seller, TOKEN_ID);
+        vm.prank(seller);
+        nft.setApprovalForAll(address(SEAPORT), true);
+        vm.deal(address(vault), PRICE);
+        AdvancedOrder memory order = _sellersListing(seller, sellerPk, address(0));
+
+        vm.prank(keeper);
+        assertTrue(vault.buy(order, bytes32(0)));
+
+        assertEq(nft.ownerOf(TOKEN_ID), owner);
+        assertEq(seller.balance, PRICE);
+        assertEq(address(vault).balance, 0);
+    }
+
+    /// @dev WETH leaves through the vault's conduit allowance, the same cap its bids draw on.
+    function test_keeperBuysWethListingThroughConduit() public {
+        (address seller, uint256 sellerPk) = makeAddrAndKey("seller");
+        nft.mint(seller, TOKEN_ID);
+        vm.prank(seller);
+        nft.setApprovalForAll(address(SEAPORT), true);
+        deal(WETH, address(vault), PRICE);
+        AdvancedOrder memory order = _sellersListing(seller, sellerPk, WETH);
+
+        vm.prank(keeper);
+        assertTrue(vault.buy(order, OPENSEA_CONDUIT_KEY));
+
+        assertEq(nft.ownerOf(TOKEN_ID), owner);
+        assertEq(IERC20(WETH).balanceOf(seller), PRICE);
+        assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
+    }
+
+    /// @dev An ordinary EOA listing of `TOKEN_ID` at `PRICE` in `token` (zero for native ETH).
+    function _sellersListing(address seller, uint256 sellerPk, address token)
+        private
+        view
+        returns (AdvancedOrder memory)
+    {
+        OrderComponents memory components = _emptyOrder();
+        components.offerer = seller;
+        components.conduitKey = bytes32(0);
+        components.counter = SEAPORT.getCounter(seller);
+        components.offer = new OfferItem[](1);
+        components.offer[0] = OfferItem(ItemType.ERC721, address(nft), TOKEN_ID, 1, 1);
+        components.consideration = new ConsiderationItem[](1);
+        components.consideration[0] = ConsiderationItem(
+            token == address(0) ? ItemType.NATIVE : ItemType.ERC20,
+            token,
+            0,
+            PRICE,
+            PRICE,
+            payable(seller)
+        );
+
+        (, bytes32 domainSeparator,) = SEAPORT.information();
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(sellerPk, SeaportOrderHash.digest(domainSeparator, components));
+
+        return AdvancedOrder({
+            parameters: OrderParameters({
+                offerer: components.offerer,
+                zone: components.zone,
+                offer: components.offer,
+                consideration: components.consideration,
+                orderType: components.orderType,
+                startTime: components.startTime,
+                endTime: components.endTime,
+                zoneHash: components.zoneHash,
+                salt: components.salt,
+                conduitKey: components.conduitKey,
+                totalOriginalConsiderationItems: components.consideration.length
+            }),
+            numerator: 1,
+            denominator: 1,
+            signature: abi.encodePacked(r, s, v),
+            extraData: ""
+        });
     }
 
     function _listing(uint256 price) private view returns (OrderComponents memory order) {

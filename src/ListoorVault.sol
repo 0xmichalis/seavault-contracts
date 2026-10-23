@@ -15,7 +15,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ConsiderationInterface} from "seaport-types/src/interfaces/ConsiderationInterface.sol";
 import {ItemType} from "seaport-types/src/lib/ConsiderationEnums.sol";
 import {
+    AdvancedOrder,
     ConsiderationItem,
+    CriteriaResolver,
     OfferItem,
     OrderComponents
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
@@ -36,9 +38,9 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      the re-derived digest matches the one Seaport passed in, the components are exactly what
 ///      Seaport is about to execute and policy can be enforced against them.
 ///
-///      Worst case for a compromised keeper key is therefore a sale at the floor or a bid at the
-///      ceiling, not asset theft. A collection never sells below its ceiling, so the two bounds
-///      cannot be cycled against each other. Floors are loss bounds, not live prices: repricing
+///      Worst case for a compromised keeper key is therefore a sale at the floor, or a bid or a buy
+///      at the ceiling, not asset theft. A collection never sells below its ceiling, so the two
+///      bounds cannot be cycled against each other. Floors are loss bounds, not live prices: repricing
 ///      below a floor needs an owner transaction.
 ///
 ///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
@@ -90,9 +92,12 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     mapping(address collection => mapping(uint256 tokenId => uint256 floorPerUnit)) public
         tokenListingFloor;
 
-    /// @notice Maximum the vault may bid per unit, per collection. Zero makes a collection unbiddable.
-    ///         Listing floors in the collection are raised to it.
+    /// @notice Maximum the vault may bid or buy at per unit, per collection. Zero makes a collection
+    ///         unbiddable. Listing floors in the collection are raised to it.
     mapping(address collection => uint256 ceilingPerUnit) public offerCeiling;
+
+    /// @notice Native ETH buys may still spend. ERC20 buys draw on the conduit allowance, as bids do.
+    uint256 public nativeBuyAllowance;
 
     event KeeperUpdated(address keeper);
     event ListingFloorUpdated(address indexed collection, uint256 floorPerUnit);
@@ -103,6 +108,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     event PaymentTokenUpdated(address indexed token, bool allowed);
     event MaxOrderDurationUpdated(uint256 maxOrderDuration);
     event MaxFeeBpsUpdated(uint256 maxFeeBps);
+    event NativeBuyAllowanceUpdated(uint256 allowance);
     event EthWithdrawn(address indexed to, uint256 amount);
 
     error ZeroAddress();
@@ -121,6 +127,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error CollectionNotBiddable(address collection);
     error PriceBelowFloor(uint256 requiredProceeds, uint256 proceeds);
     error PriceAboveCeiling(uint256 maxSpend, uint256 spend);
+    error NativeBuyAllowanceExceeded(uint256 allowance, uint256 value);
     error FeeShareTooHigh(uint256 fees, uint256 total);
     error SubscriptionInactive();
     error SubscriptionCostAboveMax(uint256 cost, uint256 maxCost);
@@ -302,9 +309,16 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         IERC721(collection).setApprovalForAll(conduit, approved);
     }
 
-    /// @notice Sets the conduit's allowance over an ERC20 the vault bids with.
+    /// @notice Sets the conduit's allowance over an ERC20 the vault bids or buys with.
     function setConduitAllowance(address token, uint256 amount) external onlyOwner {
         IERC20(token).forceApprove(conduit, amount);
+    }
+
+    /// @notice Sets how much native ETH buys may still spend. Keep it finite: together with the
+    ///         conduit allowance, it is the hard cap on what a compromised keeper can spend.
+    function setNativeBuyAllowance(uint256 allowance) external onlyOwner {
+        nativeBuyAllowance = allowance;
+        emit NativeBuyAllowanceUpdated(allowance);
     }
 
     /// @notice Cancels orders on-chain. Also callable by the keeper: cancelling is never theft,
@@ -315,6 +329,61 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         returns (bool)
     {
         return seaport.cancel(orders);
+    }
+
+    /// @notice Buys someone else's listing for the owner: Seaport fills it with the vault paying and
+    ///         the owner receiving, in one transaction. Also callable by the keeper, held to the
+    ///         same ceilings as its bids.
+    /// @param order The listing as Seaport fills it, with the zone's `extraData` when it has one.
+    /// @param fulfillerConduitKey Conduit ERC20 payments are pulled through. Only the vault's own
+    ///        conduit holds an allowance, so any other key leaves an ERC20 price unpaid.
+    /// @dev Bounded like a bid: everything paid, fees and tips included and counted at their high,
+    ///      has to fit within the ceilings of the NFTs bought, counted at their low. Both sides scale
+    ///      with the fill fraction alike, so the bound holds for partial fills too. Native payment
+    ///      comes out of the vault's balance and `nativeBuyAllowance`, counted at what is sent;
+    ///      Seaport refunds whatever a falling price leaves, without restoring the allowance.
+    ///      The vault's own listings are refused: buying one would only move its NFT to the owner
+    ///      at the cost of the fees.
+    function buy(AdvancedOrder calldata order, bytes32 fulfillerConduitKey)
+        external
+        onlyOwnerOrKeeper
+        returns (bool)
+    {
+        if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
+        if (order.parameters.offerer == address(this)) revert InvalidOfferer();
+
+        uint256 maxSpend;
+        for (uint256 i; i < order.parameters.offer.length; ++i) {
+            OfferItem calldata item = order.parameters.offer[i];
+            if (item.itemType != ItemType.ERC721 && item.itemType != ItemType.ERC1155) {
+                revert UnsupportedOfferItem(item.itemType);
+            }
+            uint256 ceilingPerUnit = offerCeiling[item.token];
+            if (ceilingPerUnit == 0) revert CollectionNotBiddable(item.token);
+            maxSpend += ceilingPerUnit * Math.min(item.startAmount, item.endAmount);
+        }
+
+        uint256 spend;
+        uint256 nativeSpend;
+        for (uint256 i; i < order.parameters.consideration.length; ++i) {
+            ConsiderationItem calldata item = order.parameters.consideration[i];
+            _requirePaymentItem(item.itemType, item.token);
+            uint256 amount = Math.max(item.startAmount, item.endAmount);
+            spend += amount;
+            if (item.itemType == ItemType.NATIVE) nativeSpend += amount;
+        }
+        if (spend > maxSpend) revert PriceAboveCeiling(maxSpend, spend);
+
+        uint256 value =
+            Math.mulDiv(nativeSpend, order.numerator, order.denominator, Math.Rounding.Ceil);
+        if (value > nativeBuyAllowance) {
+            revert NativeBuyAllowanceExceeded(nativeBuyAllowance, value);
+        }
+        nativeBuyAllowance -= value;
+
+        return seaport.fulfillAdvancedOrder{value: value}(
+            order, new CriteriaResolver[](0), fulfillerConduitKey, owner()
+        );
     }
 
     /// @notice Invalidates every order the vault has ever signed.

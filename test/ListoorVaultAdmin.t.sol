@@ -131,6 +131,8 @@ contract ListoorVaultAdminTest is VaultTest {
         _expectUnauthorized();
         vault.setConduitAllowance(address(weth), 1);
         _expectUnauthorized();
+        vault.setNativeBuyAllowance(1);
+        _expectUnauthorized();
         vault.incrementCounter();
         vm.stopPrank();
     }
@@ -158,6 +160,13 @@ contract ListoorVaultAdminTest is VaultTest {
         vault.setConduitAllowance(address(weth), 5 ether);
 
         assertEq(weth.allowance(address(vault), conduit), 5 ether);
+    }
+
+    function test_setsNativeBuyAllowance() public {
+        vm.prank(owner);
+        vault.setNativeBuyAllowance(2 ether);
+
+        assertEq(vault.nativeBuyAllowance(), 2 ether);
     }
 
     function test_cancelOrdersForwardsToSeaport() public {
