@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {OrderComponents} from "seaport-types/src/lib/ConsiderationStructs.sol";
+import {
+    AdvancedOrder,
+    CriteriaResolver,
+    OrderComponents
+} from "seaport-types/src/lib/ConsiderationStructs.sol";
 
 import {SeaportOrderHash} from "../../src/libraries/SeaportOrderHash.sol";
 
-/// @notice The slice of Seaport the vault touches: its EIP-712 domain, counters, and the two
+/// @notice The slice of Seaport the vault touches: its EIP-712 domain, counters, and the
 ///         state-changing calls the vault forwards. Order validation itself is exercised against the
 ///         real deployment in the fork tests.
 contract MockSeaport {
@@ -18,6 +22,10 @@ contract MockSeaport {
     mapping(address offerer => uint256) public counters;
     OrderComponents[] public cancelled;
     uint256 public incrementCounterCalls;
+
+    uint256 public fulfilledValue;
+    address public fulfilledRecipient;
+    bytes32 public fulfilledConduitKey;
 
     function information() external view returns (string memory, bytes32 domainSeparator, address) {
         return (
@@ -51,5 +59,17 @@ contract MockSeaport {
     function incrementCounter() external returns (uint256) {
         ++incrementCounterCalls;
         return ++counters[msg.sender];
+    }
+
+    function fulfillAdvancedOrder(
+        AdvancedOrder calldata,
+        CriteriaResolver[] calldata,
+        bytes32 fulfillerConduitKey,
+        address recipient
+    ) external payable returns (bool) {
+        fulfilledValue = msg.value;
+        fulfilledRecipient = recipient;
+        fulfilledConduitKey = fulfillerConduitKey;
+        return true;
     }
 }

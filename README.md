@@ -3,9 +3,10 @@
 EIP-1271 vault contracts for non-custodial Seaport order signing.
 
 `ListoorVault` holds the NFTs and wrapped native tokens. A hot **keeper** key is authorized only to
-_sign Seaport orders on the vault's behalf_, never to move anything. The keeper does not have to be
-trusted: the vault signs only for sales at or above an owner-set floor and bids at or below an
-owner-set ceiling, so the worst a compromised keeper can do is trade at those bounds.
+_sign Seaport orders on the vault's behalf_ and to _buy listings for its owner_, never to move
+anything itself. The keeper does not have to be trusted: the vault signs only for sales at or above
+an owner-set floor and bids at or below an owner-set ceiling, and buys only within that ceiling and
+owner-set allowances, so the worst a compromised keeper can do is trade at those bounds.
 
 `ListoorVaultFactory` deploys vaults and registers them, so an owner gets a vault in one transaction
 and off-chain infrastructure resolves it on-chain instead of carrying an address per chain. Every
@@ -35,9 +36,16 @@ construction.
   when its keeper made it. That digest types an `OrderHash`, never an order, so it cannot approve a
   fill, and it keeps working through a lapse. OpenSea does not document verifying it through
   EIP-1271, so a caller should fall back to `cancelOrders` when OpenSea refuses.
-- Residual risk: the keeper key can sell at the floor or bid at the ceiling. **Floors are loss bounds,
-  not live prices** — repricing below a floor needs an owner transaction.
-- Only the owner can move assets, and the only operator ever approved is Seaport's conduit.
+- **Buys.** `buy(order, conduitKey)` (owner or keeper) fills someone else's listing through Seaport,
+  with the vault paying and the owner receiving the NFTs in the same transaction. Everything paid,
+  fees and tips included and counted at their highest, must fit within the offer ceilings of the
+  NFTs bought, counted at their lowest. ETH spent comes out of `nativeBuyAllowance` and ERC20 out of
+  the conduit allowance; those two are the hard cap on what a compromised keeper can spend.
+- Residual risk: the keeper key can sell at the floor, or bid or buy at the ceiling until the
+  allowances run out. **Floors are loss bounds, not live prices** — repricing below a floor needs an
+  owner transaction.
+- Only the owner can withdraw assets; the keeper only spends through Seaport, within the bounds
+  above. The only operator ever approved is Seaport's conduit.
 
 Amounts are enforced per unit offered, because partial fills settle pro rata. Bundles sum the floors
 (or ceilings) of every item. Variable-amount items are measured pessimistically: vault proceeds
@@ -77,9 +85,9 @@ Instead the factory doubles as a subscription registry, and the vault checks it 
 - Shipping default is **free** (`subscriptionPrice = 0`), which makes every vault subscribed
   regardless of the clock, so a fresh deployment is usable before any pricing decision is made.
 
-A per-fill cut is still possible on the **buy path**, where the vault fulfills someone else's order
-and the transaction is ours to build rather than the orderbook's to validate. That waits for the buy
-path itself to exist.
+A per-fill cut is still possible on the **buy path** (`buy`), where the vault fulfills someone else's
+order and the transaction is ours to build rather than the orderbook's to validate. `buy` does not
+take one yet.
 
 ## Layout
 
@@ -108,8 +116,9 @@ Remappings in `foundry.toml` are maintained by hand so imports stay free of vers
 dependency with `forge soldeer install <name>~<version>` and update its remapping path to match.
 
 The fork tests are the ones that matter for interop: they pin the digest derivation against
-`Seaport.getOrderHash`, fill a vault listing and a vault offer end to end through the live Seaport
-and OpenSea conduit, and prove that policy failures, keeper rotation and cancels all block fills.
+`Seaport.getOrderHash`, fill a vault listing and a vault offer and buy a listing for the owner end
+to end through the live Seaport and OpenSea conduit, and prove that policy failures, keeper rotation
+and cancels all block fills.
 
 ## Deployment
 
@@ -180,17 +189,20 @@ Everything below is called on the vault by its owner.
 1. `setPaymentTokenAllowed(address(0), true)` for native ETH and `setPaymentTokenAllowed(WETH, true)`.
 2. `setListingFloor(collection, floorPerUnit)`, plus `setTokenListingFloor` where a token needs its
    own bound. A collection with no floor cannot be listed at all.
-3. `setOfferCeiling(collection, ceilingPerUnit)` for collections the keeper may bid on. Listings in
-   that collection then have to clear the ceiling as well as the floor.
+3. `setOfferCeiling(collection, ceilingPerUnit)` for collections the keeper may bid on or buy from.
+   Listings in that collection then have to clear the ceiling as well as the floor.
 4. `setConduitApprovalForAll(collection, true)` for every collection the vault sells from.
-5. `setConduitAllowance(WETH, amount)` if the vault will bid. Keep it finite: it is the hard cap on
-   what a compromised keeper can spend, and the keeper can wrap the vault's native balance into WETH.
-6. Adjust `setMaxOrderDuration` (default 30 days) and `setMaxFeeBps` (default 1000 = 10%) if the
+5. `setConduitAllowance(WETH, amount)` if the vault will bid, or buy listings priced in WETH. Keep it
+   finite: it caps what a compromised keeper can spend in WETH, and the keeper can wrap the vault's
+   native balance into WETH.
+6. `setNativeBuyAllowance(amount)` if the vault will buy listings priced in ETH. Keep it finite too:
+   it caps what buys spend in ETH. Each buy draws it down, so top it up as needed.
+7. Adjust `setMaxOrderDuration` (default 30 days) and `setMaxFeeBps` (default 1000 = 10%) if the
    defaults do not fit the marketplace's fee structure. The keeper should read `maxFeeBps` before
    posting: a listing whose marketplace fee plus creator earnings exceed it fails validation.
-7. Move the NFTs and WETH in, then point the keeper at the vault and watch it in dry-run mode before
-   letting it post orders.
-8. Before the trial runs out, `extendSubscription` from any wallet or `renewSubscription` from the
+8. Move the NFTs, the WETH and the ETH buys spend in, then point the keeper at the vault and watch it
+   in dry-run mode before letting it post orders.
+9. Before the trial runs out, `extendSubscription` from any wallet or `renewSubscription` from the
    vault's own balance.
 
 ## Signature blob
