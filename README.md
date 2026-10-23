@@ -53,8 +53,14 @@ construction.
   and the vault's assets move with it. Moving a vault between your own wallets keeps the keeper and
   every order live. When it changes hands, the new owner calls `setKeeper` for their own key, which
   also revokes every order the old keeper signed. The factory's `vaultOf`, `vaultsOf` and
-  `vaultCount` stay keyed by the wallet that created the vault, so read `owner()` on the vault to
-  know who holds it.
+  `vaultCount` stay keyed by the wallet that created the vault. `ownedVaultsOf` and
+  `pendingVaultsOf` track current ownership and incoming transfers, updated atomically when a
+  transfer starts, changes, is cancelled, or is accepted. Discovery needs no import or event indexer.
+
+`createVault` accepts a native deposit and forwards it to the new vault in the same transaction.
+An application can make Deposit the first interaction: native funds deploy and fund in one
+transaction; a first ERC20 or NFT deposit deploys and then transfers directly from the owner's
+wallet in two transactions, without a deposit approval. Later deposits are direct transfers.
 
 Amounts are enforced per unit offered, because partial fills settle pro rata. Bundles sum the floors
 (or ceilings) of every item. Variable-amount items are measured pessimistically: vault proceeds
