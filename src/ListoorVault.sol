@@ -23,6 +23,7 @@ import {
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
 import {ISubscriptionRegistry} from "./interfaces/ISubscriptionRegistry.sol";
+import {IVaultOwnershipRegistry} from "./interfaces/IVaultOwnershipRegistry.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 
@@ -389,6 +390,21 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice Invalidates every order the vault has ever signed.
     function incrementCounter() external onlyOwner returns (uint256) {
         return seaport.incrementCounter();
+    }
+
+    function transferOwnership(address newOwner) public override onlyOwner {
+        address previousPendingOwner = pendingOwner();
+        super.transferOwnership(newOwner);
+        IVaultOwnershipRegistry(address(subscriptions))
+            .syncVaultOwnership(owner(), previousPendingOwner);
+    }
+
+    function acceptOwnership() public override {
+        address previousOwner = owner();
+        address previousPendingOwner = pendingOwner();
+        super.acceptOwnership();
+        IVaultOwnershipRegistry(address(subscriptions))
+            .syncVaultOwnership(previousOwner, previousPendingOwner);
     }
 
     /// @dev Disabled: the owner is the only way assets leave the vault, and the only way to revoke

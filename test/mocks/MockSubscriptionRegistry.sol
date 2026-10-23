@@ -8,6 +8,8 @@ contract MockSubscriptionRegistry {
     uint256 public price;
     uint256 public periodsBought;
 
+    function syncVaultOwnership(address, address) external {}
+
     function set(bool subscribed_, uint256 price_) external {
         subscribed = subscribed_;
         price = price_;

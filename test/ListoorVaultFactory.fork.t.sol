@@ -48,24 +48,155 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
         assertEq(factory.vaultOf(alice, SALT), address(vault));
         assertTrue(factory.isVault(address(vault)));
-        assertEq(factory.vaultCount(alice), 1);
-        assertEq(factory.vaultsOf(alice)[0], address(vault));
+        assertEq(factory.ownedVaultOf(alice), address(vault));
     }
 
-    function test_separatesVaultsPerOwnerAndSalt() public {
+    function test_allowsOneVaultPerCurrentOwner() public {
         vm.startPrank(alice);
         ListoorVault first = factory.createVault(SALT, aliceKeeper);
-        ListoorVault second = factory.createVault(keccak256("secondary"), aliceKeeper);
+        vm.expectRevert(
+            abi.encodeWithSelector(ListoorVaultFactory.VaultAlreadyOwned.selector, alice)
+        );
+        factory.createVault(keccak256("secondary"), aliceKeeper);
         vm.stopPrank();
 
         vm.prank(bob);
         ListoorVault bobsVault = factory.createVault(SALT, bobKeeper);
 
-        assertTrue(address(first) != address(second));
         assertTrue(address(first) != address(bobsVault));
-        assertEq(factory.vaultCount(alice), 2);
-        assertEq(factory.vaultCount(bob), 1);
+        assertEq(factory.ownedVaultOf(alice), address(first));
+        assertEq(factory.ownedVaultOf(bob), address(bobsVault));
         assertEq(bobsVault.owner(), bob);
+    }
+
+    function test_firstNativeDepositCreatesAndFundsVaultInOneTransaction() public {
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        ListoorVault vault = factory.createVault{value: 1 ether}(SALT, aliceKeeper);
+
+        assertEq(address(vault).balance, 1 ether);
+        assertEq(address(factory).balance, 0);
+        assertEq(factory.ownedVaultOf(alice), address(vault));
+    }
+
+    function test_discoversCurrentAndPendingOwnersAfterTransfers() public {
+        vm.prank(alice);
+        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+
+        vm.prank(alice);
+        vault.transferOwnership(bob);
+        assertEq(factory.ownedVaultOf(alice), address(vault));
+        assertEq(factory.ownedVaultOf(bob), address(0));
+        assertEq(factory.pendingVaultsOf(bob, 0, 100), _one(address(vault)));
+
+        vm.prank(bob);
+        vault.acceptOwnership();
+        assertEq(factory.ownedVaultOf(alice), address(0));
+        assertEq(factory.ownedVaultOf(bob), address(vault));
+        assertEq(factory.pendingVaultsOf(bob, 0, 100).length, 0);
+        assertEq(factory.vaultOf(alice, SALT), address(vault));
+        assertEq(vault.keeper(), aliceKeeper);
+    }
+
+    function test_replacingAndCancellingPendingTransfersUpdatesDiscovery() public {
+        vm.startPrank(alice);
+        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        vault.transferOwnership(bob);
+        vault.transferOwnership(factoryOwner);
+        assertEq(factory.pendingVaultsOf(bob, 0, 100).length, 0);
+        assertEq(factory.pendingVaultsOf(factoryOwner, 0, 100), _one(address(vault)));
+        vault.transferOwnership(address(0));
+        vm.stopPrank();
+        assertEq(factory.pendingVaultsOf(factoryOwner, 0, 100).length, 0);
+        assertEq(factory.pendingVaultsOf(address(0), 0, 100).length, 0);
+        assertEq(factory.ownedVaultOf(alice), address(vault));
+    }
+
+    function test_ownerLookupFollowsRepeatedAndSelfTransfers() public {
+        vm.startPrank(alice);
+        ListoorVault first = factory.createVault(SALT, aliceKeeper);
+        first.transferOwnership(bob);
+        vm.stopPrank();
+        vm.startPrank(bob);
+        first.acceptOwnership();
+        first.transferOwnership(alice);
+        vm.stopPrank();
+        vm.prank(alice);
+        first.acceptOwnership();
+
+        assertEq(factory.ownedVaultOf(alice), address(first));
+        assertEq(factory.ownedVaultOf(bob), address(0));
+        assertEq(factory.pendingVaultsOf(alice, 0, 100).length, 0);
+        vm.prank(alice);
+        first.transferOwnership(alice);
+        vm.prank(alice);
+        first.acceptOwnership();
+        assertEq(factory.ownedVaultOf(alice), address(first));
+    }
+
+    function test_cannotAcceptAnotherVaultWhileAlreadyOwningOne() public {
+        vm.prank(alice);
+        ListoorVault incoming = factory.createVault(SALT, aliceKeeper);
+        vm.prank(alice);
+        incoming.transferOwnership(bob);
+        vm.prank(bob);
+        ListoorVault existing = factory.createVault(SALT, bobKeeper);
+
+        vm.expectRevert(abi.encodeWithSelector(ListoorVaultFactory.VaultAlreadyOwned.selector, bob));
+        vm.prank(bob);
+        incoming.acceptOwnership();
+        assertEq(incoming.owner(), alice);
+        assertEq(incoming.pendingOwner(), bob);
+        assertEq(factory.ownedVaultOf(alice), address(incoming));
+        assertEq(factory.ownedVaultOf(bob), address(existing));
+        assertEq(factory.pendingVaultsOf(bob, 0, 100), _one(address(incoming)));
+    }
+
+    function test_canCreateAgainAfterTransferringOwnedVault() public {
+        vm.prank(alice);
+        ListoorVault first = factory.createVault(SALT, aliceKeeper);
+        vm.prank(alice);
+        first.transferOwnership(bob);
+        vm.prank(bob);
+        first.acceptOwnership();
+        vm.prank(alice);
+        ListoorVault replacement = factory.createVault(keccak256("replacement"), aliceKeeper);
+        assertEq(factory.ownedVaultOf(alice), address(replacement));
+        assertEq(factory.ownedVaultOf(bob), address(first));
+        assertEq(factory.vaultOf(alice, SALT), address(first));
+    }
+
+    function test_onlyRegisteredVaultsCanUpdateDiscovery() public {
+        vm.expectRevert(abi.encodeWithSelector(ListoorVaultFactory.NotAVault.selector, alice));
+        vm.prank(alice);
+        factory.syncVaultOwnership(alice, bob);
+    }
+
+    function test_incomingTransferPagesAreBounded() public {
+        address first;
+        address last;
+        for (uint256 i; i < 101; ++i) {
+            address creator = address(uint160(i + 100));
+            vm.prank(creator);
+            ListoorVault vault = factory.createVault(bytes32(i), aliceKeeper);
+            vm.prank(creator);
+            vault.transferOwnership(bob);
+            if (i == 0) first = address(vault);
+            last = address(vault);
+        }
+
+        address[] memory pending = factory.pendingVaultsOf(bob, 0, type(uint256).max);
+        assertEq(pending.length, 100);
+        assertEq(pending[0], first);
+        assertEq(factory.pendingVaultsOf(bob, 100, 100), _one(last));
+        assertEq(factory.pendingVaultsOf(bob, 101, 100).length, 0);
+        assertEq(factory.pendingVaultsOf(bob, 0, 0).length, 0);
+        assertEq(factory.pendingVaultsOf(bob, type(uint256).max, 100).length, 0);
+    }
+
+    function _one(address vault) private pure returns (address[] memory result) {
+        result = new address[](1);
+        result[0] = vault;
     }
 
     function test_rejectsReusedSalt() public {

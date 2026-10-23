@@ -5,10 +5,12 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import {ListoorVault} from "./ListoorVault.sol";
 import {ICreateX} from "./interfaces/ICreateX.sol";
 import {ISubscriptionRegistry} from "./interfaces/ISubscriptionRegistry.sol";
+import {IVaultOwnershipRegistry} from "./interfaces/IVaultOwnershipRegistry.sol";
 import {CodeStore} from "./libraries/CodeStore.sol";
 
 /// @title ListoorVaultFactory
@@ -35,13 +37,16 @@ import {CodeStore} from "./libraries/CodeStore.sol";
 ///      the vault owner keeps withdrawals, cancels and policy throughout.
 ///
 ///      A per-vault price override prices individual vaults off-schedule, zero making one free.
-contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
+contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnershipRegistry {
+    using EnumerableSet for EnumerableSet.AddressSet;
+
     ICreateX public constant CREATE_X = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
 
     /// @notice Length of one subscription period.
     uint256 public constant SUBSCRIPTION_PERIOD = 30 days;
 
     uint256 private constant DEFAULT_TRIAL_PERIOD = 30 days;
+    uint256 private constant MAX_DISCOVERY_PAGE_SIZE = 100;
 
     /// @notice Seaport deployment every vault from this factory signs orders for.
     address public immutable seaport;
@@ -51,7 +56,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
 
     /// @notice Vault deployed for an owner under a given salt, zero if not created yet. Keyed by the
     ///         owner that created it: a later ownership transfer does not move it, so read the
-    ///         current owner from the vault itself. The same holds for `vaultsOf` and `vaultCount`.
+    ///         current owner from the vault itself.
     mapping(address owner => mapping(bytes32 salt => address vault)) public vaultOf;
 
     /// @notice Whether an address is a vault this factory deployed.
@@ -72,7 +77,9 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
     /// @notice Off-schedule prices for individual vaults, e.g. zero for partner vaults.
     mapping(address vault => PriceOverride) public priceOverrides;
 
-    mapping(address owner => address[] vaults) private _vaults;
+    /// @notice The single vault currently owned by a wallet, or zero if it has none.
+    mapping(address owner => address vault) public ownedVaultOf;
+    mapping(address pendingOwner => EnumerableSet.AddressSet vaults) private _pendingVaults;
 
     /// @notice Where the vault's creation code is kept; `CodeStore.read` returns it verbatim.
     address public immutable vaultCodeStore;
@@ -94,6 +101,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
 
     error ZeroAddress();
     error VaultAlreadyExists(bytes32 salt);
+    error VaultAlreadyOwned(address owner);
     error NotAVault(address vault);
     error SubscriptionNotRequired(address vault);
     error NoPeriods();
@@ -117,11 +125,17 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
     /// @param salt Chosen by the caller; distinguishes multiple vaults with the same owner and fixes
     ///        the vault's address across chains.
     /// @param keeper Hot key authorized to sign orders for the vault.
+    /// @dev Any native value is deposited into the new vault in this same transaction.
     /// @dev Inputs are checked here rather than left to the vault's constructor, because CreateX
     ///      replaces a failed construction with its own opaque `FailedContractCreation`.
-    function createVault(bytes32 salt, address keeper) external returns (ListoorVault vault) {
+    function createVault(bytes32 salt, address keeper)
+        external
+        payable
+        returns (ListoorVault vault)
+    {
         if (keeper == address(0)) revert ZeroAddress();
         if (vaultOf[msg.sender][salt] != address(0)) revert VaultAlreadyExists(salt);
+        if (ownedVaultOf[msg.sender] != address(0)) revert VaultAlreadyOwned(msg.sender);
 
         vault = ListoorVault(
             payable(CREATE_X.deployCreate3(
@@ -135,8 +149,10 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
 
         vaultOf[msg.sender][salt] = address(vault);
         isVault[address(vault)] = true;
-        _vaults[msg.sender].push(address(vault));
+        ownedVaultOf[msg.sender] = address(vault);
         paidThrough[address(vault)] = block.timestamp + trialPeriod;
+
+        if (msg.value != 0) Address.sendValue(payable(address(vault)), msg.value);
 
         emit VaultCreated(msg.sender, address(vault), salt, keeper);
         emit SubscriptionExtended(address(vault), msg.sender, 0, block.timestamp + trialPeriod);
@@ -150,12 +166,39 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
             );
     }
 
-    function vaultsOf(address owner) external view returns (address[] memory) {
-        return _vaults[owner];
+    /// @notice Pending ownership proposals for this wallet; acceptance requires an empty owner slot.
+    /// @dev Returns at most 100 addresses, starting at `offset`. Ordering can change after transfers.
+    function pendingVaultsOf(address pendingOwner, uint256 offset, uint256 limit)
+        external
+        view
+        returns (address[] memory)
+    {
+        EnumerableSet.AddressSet storage vaults = _pendingVaults[pendingOwner];
+        uint256 length = vaults.length();
+        if (offset >= length) return new address[](0);
+        uint256 size = Math.min(limit, Math.min(MAX_DISCOVERY_PAGE_SIZE, length - offset));
+        return vaults.values(offset, offset + size);
     }
 
-    function vaultCount(address owner) external view returns (uint256) {
-        return _vaults[owner].length;
+    /// @inheritdoc IVaultOwnershipRegistry
+    function syncVaultOwnership(address previousOwner, address previousPendingOwner) external {
+        if (!isVault[msg.sender]) revert NotAVault(msg.sender);
+        ListoorVault vault = ListoorVault(payable(msg.sender));
+        address currentOwner = vault.owner();
+        address currentPendingOwner = vault.pendingOwner();
+        if (previousOwner != currentOwner) {
+            if (ownedVaultOf[currentOwner] != address(0)) revert VaultAlreadyOwned(currentOwner);
+            delete ownedVaultOf[previousOwner];
+            ownedVaultOf[currentOwner] = msg.sender;
+        }
+        if (previousPendingOwner != currentPendingOwner) {
+            if (previousPendingOwner != address(0)) {
+                _pendingVaults[previousPendingOwner].remove(msg.sender);
+            }
+            if (currentPendingOwner != address(0)) {
+                _pendingVaults[currentPendingOwner].add(msg.sender);
+            }
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
