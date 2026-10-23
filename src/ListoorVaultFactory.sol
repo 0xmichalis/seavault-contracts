@@ -9,6 +9,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ListoorVault} from "./ListoorVault.sol";
 import {ICreateX} from "./interfaces/ICreateX.sol";
 import {ISubscriptionRegistry} from "./interfaces/ISubscriptionRegistry.sol";
+import {CodeStore} from "./libraries/CodeStore.sol";
 
 /// @title ListoorVaultFactory
 /// @notice Deploys `ListoorVault` instances and keeps a registry of them, so an owner can get a vault
@@ -18,6 +19,10 @@ import {ISubscriptionRegistry} from "./interfaces/ISubscriptionRegistry.sol";
 ///      its constructor-time domain-separator check. Deployment goes through CreateX's CREATE3, so a
 ///      vault's address depends only on its owner and salt — identical on every chain even though
 ///      the factory feeds each chain's own Seaport and conduit into the constructor.
+///
+///      The vault's creation code lives in a store contract the constructor writes, not in the
+///      factory's own bytecode, so the vault can grow without pushing the factory past the
+///      contract size limit.
 ///
 ///      The CreateX salt embeds this factory's address with redeploy protection off, which asks
 ///      CreateX for a permissioned, chain-independent deploy: no other caller can occupy a vault
@@ -67,6 +72,8 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
 
     mapping(address owner => address[] vaults) private _vaults;
 
+    address private immutable vaultCodeStore;
+
     struct PriceOverride {
         bool enabled;
         uint256 price;
@@ -96,6 +103,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
         if (seaport_ == address(0) || conduit_ == address(0)) revert ZeroAddress();
         seaport = seaport_;
         conduit = conduit_;
+        vaultCodeStore = CodeStore.write(type(ListoorVault).creationCode);
         subscriptionRecipient = owner_;
         trialPeriod = DEFAULT_TRIAL_PERIOD;
         emit SubscriptionUpdated(owner_, 0);
@@ -116,7 +124,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
             payable(CREATE_X.deployCreate3(
                     _createXSalt(msg.sender, salt),
                     abi.encodePacked(
-                        type(ListoorVault).creationCode,
+                        CodeStore.read(vaultCodeStore),
                         abi.encode(seaport, conduit, msg.sender, keeper, address(this))
                     )
                 ))

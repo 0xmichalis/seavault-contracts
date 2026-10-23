@@ -86,6 +86,7 @@ path itself to exist.
     src/ListoorVault.sol                     the vault
     src/ListoorVaultFactory.sol              deployment, registry and subscriptions
     src/libraries/SeaportOrderHash.sol       Seaport digest re-derivation
+    src/libraries/CodeStore.sol              vault creation code, kept outside the factory
     script/DeployListoorVaultFactory.s.sol   CREATE3 deployment of the factory
     script/CreateVault.s.sol                 vault creation through the factory
     test/*.t.sol                             policy, admin, signature-encoding tests
