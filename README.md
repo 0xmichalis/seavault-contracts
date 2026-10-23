@@ -42,7 +42,8 @@ construction.
   with the vault paying and the owner receiving the NFTs in the same transaction. Everything paid,
   fees and tips included and counted at their highest, must fit within the offer ceilings of the
   NFTs bought, counted at their lowest. ETH spent comes out of `nativeBuyAllowance` and ERC20 out of
-  the conduit allowance; those two are the hard cap on what a compromised keeper can spend.
+  the conduit allowance; those two are the hard cap on what a compromised keeper can spend. The
+  vault's own listings are refused.
 - Residual risk: the keeper key can sell at the floor, or bid or buy at the ceiling until the
   allowances run out. **Floors are loss bounds, not live prices** — repricing below a floor needs an
   owner transaction.

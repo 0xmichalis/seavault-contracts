@@ -73,6 +73,17 @@ contract ListoorVaultBuyTest is VaultTest {
         vault.buy(order, CONDUIT_KEY);
     }
 
+    function test_spendsTheAllowanceToTheLastWei() public {
+        AdvancedOrder memory order = sellersListing(CEILING);
+        vm.prank(owner);
+        vault.setNativeBuyAllowance(CEILING);
+
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY);
+
+        assertEq(vault.nativeBuyAllowance(), 0);
+    }
+
     /// @dev A partial fill pays its share of the price; the ceiling binds per unit either way.
     function test_paysNativeShareOfPartialFill() public {
         AdvancedOrder memory order = sellersEditions(4, 4 * CEILING);
@@ -157,6 +168,16 @@ contract ListoorVaultBuyTest is VaultTest {
                 ListoorVault.UnsupportedConsiderationItem.selector, ItemType.ERC721
             )
         );
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY);
+    }
+
+    /// @dev Buying the vault's own listing would only move its NFT to the owner at the cost of fees.
+    function test_rejectsVaultsOwnListing() public {
+        AdvancedOrder memory order = sellersListing(CEILING);
+        order.parameters.offerer = address(vault);
+
+        vm.expectRevert(ListoorVault.InvalidOfferer.selector);
         vm.prank(keeper);
         vault.buy(order, CONDUIT_KEY);
     }

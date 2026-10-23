@@ -5,6 +5,8 @@ pragma solidity 0.8.28;
 /// @notice Keeps a blob as the runtime code of a contract of its own, so a contract can deploy init
 ///         code larger than it could carry in its own bytecode.
 /// @dev The stored code opens with a STOP byte, so calling the store never executes the blob.
+///      EIP-170 caps the store at 24,576 bytes of runtime code like any contract, so a blob may be
+///      24,575 bytes at most: a contract's creation code reaches that before its runtime does.
 library CodeStore {
     error StoreFailed();
 

@@ -74,7 +74,8 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry {
 
     mapping(address owner => address[] vaults) private _vaults;
 
-    address private immutable vaultCodeStore;
+    /// @notice Where the vault's creation code is kept; `CodeStore.read` returns it verbatim.
+    address public immutable vaultCodeStore;
 
     struct PriceOverride {
         bool enabled;

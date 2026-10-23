@@ -342,12 +342,15 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     ///      with the fill fraction alike, so the bound holds for partial fills too. Native payment
     ///      comes out of the vault's balance and `nativeBuyAllowance`, counted at what is sent;
     ///      Seaport refunds whatever a falling price leaves, without restoring the allowance.
+    ///      The vault's own listings are refused: buying one would only move its NFT to the owner
+    ///      at the cost of the fees.
     function buy(AdvancedOrder calldata order, bytes32 fulfillerConduitKey)
         external
         onlyOwnerOrKeeper
         returns (bool)
     {
         if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
+        if (order.parameters.offerer == address(this)) revert InvalidOfferer();
 
         uint256 maxSpend;
         for (uint256 i; i < order.parameters.offer.length; ++i) {
