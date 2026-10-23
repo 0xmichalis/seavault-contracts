@@ -39,7 +39,7 @@ cast call 0xFACTORY "vaultOf(address,bytes32)(address)" 0xOWNER $(cast keccak pr
 (`0x1E00…3c71`); override them per chain if OpenSea points elsewhere. A new factory salt seed yields a
 fresh factory and a fresh set of vault addresses, which is how you roll out a new vault version; a new
 vault salt can create a replacement after the owner transfers their current vault away.
-A wallet can own only one vault per chain, including vaults received through ownership transfers.
+A wallet can own only one vault per factory per chain, including vaults received through ownership transfers.
 
 `--verify` uses the `[etherscan]` config and a single `ETHERSCAN_API_KEY`. Zora and Shape are not on
 Etherscan; verify those with `--verifier blockscout --verifier-url <explorer>/api`.
@@ -83,4 +83,33 @@ Everything below is called on the vault by its owner.
    in dry-run mode before letting it post orders.
 9. Before the trial runs out, `extendSubscription` from any wallet or `renewSubscription` from the
    vault's own balance.
+
+## New versions and migration
+
+The factory and vaults are immutable, with no proxy or code replacement mechanism. Owner and
+factory-admin setters change policies, keepers and subscription terms within their existing
+permissions. Changing contract logic or the Seaport/conduit wiring requires a new factory version.
+Deploy it with a new `FACTORY_SALT_SEED`, consistently across chains. The old factory cannot start
+creating the new bytecode, and existing vaults keep their original subscription registry.
+
+Migration is opt-in and signed by each vault owner:
+
+1. Call `setKeeper(oldVault)` on the old vault. Using the vault itself as keeper prevents ECDSA
+   signatures and increments its Seaport counter, invalidating even validated or partially filled
+   orders. Using the owner's address would not stop the keeper if they share a wallet.
+2. Create a vault through the new factory, unless one is already owned there. To keep the new
+   vault inactive during setup, pass its predicted address as keeper.
+3. Move assets directly to the new vault through `withdrawETH`, `withdrawERC20`, `withdrawERC721`
+   and `withdrawERC1155`. Each asset transfer is a separate owner transaction; interrupted
+   migrations can resume without sending assets back through the wallet.
+4. Configure the new vault's policies and conduit permissions, update the trading client's
+   account assignments, then set its keeper to the desired signing wallet.
+
+One-vault ownership is enforced per factory, so old and new versions can coexist during migration.
+Approvals, policy state and paid subscription time stay in the original deployment. Clients must
+retain earlier factory addresses for discovery and management, and use each vault's original
+registry for subscriptions and ownership acceptance. Incompatible ABIs need explicit client support.
+
+A new deployment cannot repair the old code. If an immutable bug prevents withdrawals, deploying
+a replacement does not recover the affected assets.
 
