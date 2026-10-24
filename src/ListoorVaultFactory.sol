@@ -14,6 +14,7 @@ import {IVaultOwnershipRegistry} from "./interfaces/IVaultOwnershipRegistry.sol"
 import {CodeStore} from "./libraries/CodeStore.sol";
 
 /// @title ListoorVaultFactory
+/// @custom:security-contact security@kazani.ch
 /// @notice Deploys `ListoorVault` instances and keeps a registry of them, so an owner can get a vault
 ///         in one transaction and the keeper can look the vault up on-chain instead of being configured
 ///         with an address per chain.
@@ -33,9 +34,9 @@ import {CodeStore} from "./libraries/CodeStore.sol";
 ///      The factory doubles as the subscription registry its vaults check before buying. Vaults are
 ///      created with a trial period; after that, someone has to buy periods for full keeper access.
 ///      The keeper enforces free-tier listing and offer limits offchain. Paid time can only be
-///      extended, never revoked, so a paid window is guaranteed by code even if the factory owner
-///      turns hostile — and a lapse never touches custody, since the vault owner keeps withdrawals,
-///      cancels and policy throughout.
+///      extended, never revoked. The factory owner can separately block trading for individual
+///      vaults, including paid ones. Neither a lapse nor a block touches custody: the vault owner
+///      keeps withdrawals, cancels and policy throughout.
 ///
 ///      A per-vault price override prices individual vaults off-schedule, zero making one free.
 contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnershipRegistry {
@@ -82,6 +83,9 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
     mapping(address owner => address vault) public ownedVaultOf;
     mapping(address pendingOwner => EnumerableSet.AddressSet vaults) private _pendingVaults;
 
+    /// @notice Blocks order validation and direct buys independently of subscription entitlement.
+    mapping(address vault => bool blocked) public override isBlocked;
+
     /// @notice Where the vault's creation code is kept; `CodeStore.read` returns it verbatim.
     address public immutable vaultCodeStore;
 
@@ -96,6 +100,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
     event SubscriptionUpdated(address recipient, uint256 price);
     event PriceOverrideUpdated(address indexed vault, bool enabled, uint256 price);
     event TrialPeriodUpdated(uint256 trialPeriod);
+    event VaultBlockStatusUpdated(address indexed vault, bool blocked);
     event SubscriptionExtended(
         address indexed vault, address indexed payer, uint256 periods, uint256 paidThrough
     );
@@ -205,6 +210,15 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
     /*//////////////////////////////////////////////////////////////
                               SUBSCRIPTIONS
     //////////////////////////////////////////////////////////////*/
+
+    /// @notice Blocks or unblocks a registered vault's trading, including paid vaults.
+    /// @dev Does not revoke orders Seaport already validated; those need cancellation or a counter
+    ///      bump. Withdrawals, cancellations and owner-set policy remain available.
+    function setBlocked(address vault, bool blocked) external onlyOwner {
+        if (!isVault[vault]) revert NotAVault(vault);
+        isBlocked[vault] = blocked;
+        emit VaultBlockStatusUpdated(vault, blocked);
+    }
 
     /// @inheritdoc ISubscriptionRegistry
     function isSubscribed(address vault) public view returns (bool) {

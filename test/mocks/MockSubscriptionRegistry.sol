@@ -5,6 +5,7 @@ pragma solidity 0.8.28;
 ///         standing up a factory.
 contract MockSubscriptionRegistry {
     bool public subscribed = true;
+    bool public blocked;
     uint256 public price;
     uint256 public periodsBought;
 
@@ -13,6 +14,14 @@ contract MockSubscriptionRegistry {
     function set(bool subscribed_, uint256 price_) external {
         subscribed = subscribed_;
         price = price_;
+    }
+
+    function setBlocked(bool blocked_) external {
+        blocked = blocked_;
+    }
+
+    function isBlocked(address) external view returns (bool) {
+        return blocked;
     }
 
     function isSubscribed(address) external view returns (bool) {

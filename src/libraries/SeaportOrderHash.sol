@@ -9,6 +9,7 @@ import {
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
 /// @title SeaportOrderHash
+/// @custom:security-contact security@kazani.ch
 /// @notice Re-derives the EIP-712 digest that Seaport produces for an order.
 /// @dev A contract offerer only receives the digest in `isValidSignature`, which says nothing about
 ///      what is being sold and for how much. Re-deriving the digest from order components supplied

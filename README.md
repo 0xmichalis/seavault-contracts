@@ -39,4 +39,6 @@ contracts. Dependency changes must update both `[dependencies]` and the manual r
 Keeper limits bound what a compromised key can trade. Tightening policy cannot revoke orders
 Seaport already validated; cancel those orders or increment the counter. Free-tier listing and
 offer quotas are enforced by the keeper; direct buys require an active subscription.
+The factory owner can block order validation and direct buys for individual vaults, including paid
+ones. Withdrawals and cancellations remain available.
 See the architecture document for the full security model.

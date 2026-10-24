@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 /// @notice The part of CreateX the factory and its deployment script use.
+/// @custom:security-contact security@kazani.ch
 /// @dev CreateX is deployed at 0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed on every chain these
 ///      contracts target. Declared locally rather than pulled in as a dependency: only these two
 ///      functions are needed, and `DeployListoorVaultFactory.fork.t.sol` exercises them against the

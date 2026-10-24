@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @notice Where a vault checks that its keeper service is paid for, typically the factory that
-///         created it.
+/// @notice Where a vault checks subscription entitlement and trading access, typically its factory.
+/// @custom:security-contact security@kazani.ch
 /// @dev A lapsed subscription blocks direct buys; the keeper enforces free-tier listing and offer
-///      limits offchain. Signatures, withdrawals, cancels and policy remain available. Paid time can
-///      only be extended, never shortened, so a paid window is guaranteed by code.
+///      limits offchain. The blocklist separately gates order validation and direct buys, including
+///      paid vaults. Withdrawals, cancels and policy remain available. Paid time can only grow.
 interface ISubscriptionRegistry {
-    /// @notice Whether `vault` has full keeper access. Always true where the price is zero.
+    /// @notice Whether `vault` is blocked from order validation and direct buys.
+    function isBlocked(address vault) external view returns (bool);
+
+    /// @notice Whether `vault` has premium subscription time or a zero price, regardless of blocking.
     function isSubscribed(address vault) external view returns (bool);
 
     /// @notice Price of one subscription period for `vault`, in wei. Zero means free.

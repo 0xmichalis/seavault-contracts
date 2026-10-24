@@ -88,7 +88,7 @@ Everything below is called on the vault by its owner.
 ## New versions and migration
 
 The factory and vaults are immutable, with no proxy or code replacement mechanism. Owner and
-factory-admin setters change policies, keepers and subscription terms within their existing
+factory-admin setters change policies, keepers, block status and subscription terms within their existing
 permissions. Changing contract logic or the Seaport/conduit wiring requires a new factory version.
 Deploy it with a new `FACTORY_SALT_SEED`, consistently across chains. The old factory cannot start
 creating the new bytecode, and existing vaults keep their original subscription registry.

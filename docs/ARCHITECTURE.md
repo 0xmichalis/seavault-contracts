@@ -26,7 +26,7 @@ construction.
   floor.
 - **Seaport stops asking the vault once an order is validated on-chain or partially filled.** Anyone
   can validate a posted order with its signature, and collection offers with a quantity fill
-  partially as a matter of course. Policy changes do not reach those orders.
+  partially as a matter of course. Policy changes and blocklist changes do not reach those orders.
 - `setKeeper` bumps the vault's Seaport counter, so it revokes every outstanding order at once,
   validated or not. `incrementCounter` (owner) does the same without rotating, and `cancelOrders`
   (owner or keeper) retracts single orders. Cancel or bump after tightening policy if live orders
@@ -100,8 +100,8 @@ the vault checks it before direct buys:
   and every policy setter keep working, so a vault is never held hostage. Usage quotas restrict the
   keeper service; owners can choose their own keeper and are not bound to its quotas.
 - **Paid time can only grow.** There is no code path that shortens `paidThrough`; raising the price or
-  cutting the trial applies to future purchases only. That, plus unconditional custody, is what makes
-  the gate safe to depend on.
+  cutting the trial applies to future purchases only. Blocking a vault preserves its paid time but
+  can suspend trading during that window; withdrawals remain available.
 - `setPriceOverride(vault, enabled, price)` prices individual vaults off-schedule — zero grants
   full-access exceptions for partner, subscriber or in-house vaults, or a discount.
 - Shipping default is **free** (`subscriptionPrice = 0`), which makes every vault subscribed
@@ -111,6 +111,19 @@ the vault checks it before direct buys:
 A per-fill cut is still possible on the **buy path** (`buy`), where the vault fulfills someone else's
 order and the transaction is ours to build rather than the orderbook's to validate. `buy` does not
 take one yet.
+
+## Vault blocklist
+
+Vaults start unblocked. The factory owner calls `setBlocked(vault, blocked)` for a registered vault;
+`isBlocked(vault)` exposes the status and `VaultBlockStatusUpdated` records changes. Blocking is
+independent of subscription entitlement: it rejects ordinary `isValidSignature` validation and
+`buy` for free, paid and zero-price vaults. Paying, renewing or changing price overrides does not
+remove a block. Unblocking restores valid outstanding signatures without resigning them.
+
+Gasless cancellation signatures, `cancelOrders`, `incrementCounter`, withdrawals and owner-set
+policy remain available. A block does not invalidate orders Seaport already validated or partially
+filled; cancel those orders or increment the counter. Older immutable vaults do not acquire this
+gate through a factory or keeper update and need migration to enforce it onchain.
 
 ## Layout
 

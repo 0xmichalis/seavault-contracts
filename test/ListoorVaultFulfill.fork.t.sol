@@ -100,6 +100,56 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(nft.ownerOf(TOKEN_ID), taker);
     }
 
+    function test_blockingStopsUnvalidatedOrdersAndUnblockingRestoresThem() public {
+        nft.mint(address(vault), TOKEN_ID);
+        Order memory order = _signed(_listing(PRICE));
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vm.prank(taker);
+        SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
+        assertEq(nft.ownerOf(TOKEN_ID), address(vault));
+
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), false);
+        vm.prank(taker);
+        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0)));
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+    }
+
+    /// @dev A block cannot reach orders Seaport has already validated; those need cancellation.
+    function test_validatedListingStillFillsWhileBlocked() public {
+        nft.mint(address(vault), TOKEN_ID);
+        Order[] memory orders = new Order[](1);
+        orders[0] = _signed(_listing(PRICE));
+        SEAPORT.validate(orders);
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.prank(taker);
+        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0)));
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+    }
+
+    function test_blockedKeeperCanCancelValidatedListing() public {
+        nft.mint(address(vault), TOKEN_ID);
+        OrderComponents[] memory components = new OrderComponents[](1);
+        components[0] = _listing(PRICE);
+        Order[] memory orders = new Order[](1);
+        orders[0] = _signed(components[0]);
+        SEAPORT.validate(orders);
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.prank(keeper);
+        assertTrue(vault.cancelOrders(components));
+        vm.expectRevert();
+        vm.prank(taker);
+        SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0));
+        assertEq(nft.ownerOf(TOKEN_ID), address(vault));
+    }
+
     function test_takerFillsVaultOffer() public {
         deal(WETH, address(vault), PRICE);
         nft.mint(taker, TOKEN_ID);
@@ -177,6 +227,29 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(nft.ownerOf(TOKEN_ID), owner);
         assertEq(seller.balance, PRICE);
         assertEq(address(vault).balance, 0);
+    }
+
+    function test_blockingStopsDirectBuysUntilUnblocked() public {
+        (address seller, uint256 sellerPk) = makeAddrAndKey("seller");
+        nft.mint(seller, TOKEN_ID);
+        vm.prank(seller);
+        nft.setApprovalForAll(address(SEAPORT), true);
+        vm.deal(address(vault), PRICE);
+        AdvancedOrder memory order = _sellersListing(seller, sellerPk, address(0));
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vm.prank(keeper);
+        vault.buy(order, bytes32(0));
+        assertEq(nft.ownerOf(TOKEN_ID), seller);
+        assertEq(address(vault).balance, PRICE);
+
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), false);
+        vm.prank(keeper);
+        assertTrue(vault.buy(order, bytes32(0)));
+        assertEq(nft.ownerOf(TOKEN_ID), owner);
     }
 
     /// @dev WETH leaves through the vault's conduit allowance, the same cap its bids draw on.
