@@ -43,6 +43,12 @@ contract ListoorVaultCancellationTest is VaultTest {
         assertEq(validateCancellation(ORDER_HASH, keeperPk), MAGIC_VALUE);
     }
 
+    function test_vouchesForCancellationsWhileBlocked() public {
+        subscriptions.setBlocked(true);
+
+        assertEq(validateCancellation(ORDER_HASH, keeperPk), MAGIC_VALUE);
+    }
+
     function test_rejectsCancellationSignedBySomeoneElse() public {
         (, uint256 attackerPk) = makeAddrAndKey("attacker");
         bytes32 digest = vault.cancellationDigest(ORDER_HASH);

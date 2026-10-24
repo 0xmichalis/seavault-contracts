@@ -205,6 +205,34 @@ contract ListoorVaultBuyTest is VaultTest {
         vault.buy(order, CONDUIT_KEY);
     }
 
+    function test_blockingStopsBothOwnerAndKeeperBuys() public {
+        AdvancedOrder memory order = sellersListing(CEILING);
+        subscriptions.setBlocked(true);
+
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vm.prank(owner);
+        vault.buy(order, CONDUIT_KEY);
+        assertEq(vault.nativeBuyAllowance(), 10 ether);
+        assertEq(address(vault).balance, 10 ether);
+    }
+
+    function test_unblockingDoesNotBypassTheSubscriptionGate() public {
+        AdvancedOrder memory order = sellersListing(CEILING);
+        subscriptions.set(false, 0.01 ether);
+        subscriptions.setBlocked(true);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY);
+
+        subscriptions.setBlocked(false);
+        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY);
+    }
+
     function test_strangerCannotBuy() public {
         AdvancedOrder memory order = sellersListing(CEILING);
 

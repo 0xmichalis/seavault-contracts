@@ -47,6 +47,18 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
         assertTrue(factory.isSubscribed(makeAddr("neverRegistered")));
     }
 
+    function test_zeroPriceRestoresFullAccessWithoutExtendingPaidTime() public {
+        _priced();
+        assertFalse(factory.isSubscribed(vault));
+        uint256 expiry = factory.paidThrough(vault);
+
+        vm.prank(factoryOwner);
+        factory.setSubscription(recipient, 0);
+
+        assertTrue(factory.isSubscribed(vault));
+        assertEq(factory.paidThrough(vault), expiry);
+    }
+
     function test_setSubscription() public {
         vm.expectEmit(true, true, true, true);
         emit ListoorVaultFactory.SubscriptionUpdated(recipient, PRICE);

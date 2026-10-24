@@ -28,6 +28,7 @@ import {IWETH} from "./interfaces/IWETH.sol";
 import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 
 /// @title ListoorVault
+/// @custom:security-contact security@kazani.ch
 /// @notice Custody for NFTs and wrapped native tokens that authorizes a hot "keeper" key to sign
 ///         Seaport orders on its behalf via EIP-1271, so the key trading the assets never owns them.
 /// @dev The keeper key never moves assets: it can only produce signatures that Seaport accepts, and
@@ -45,13 +46,14 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      below a floor needs an owner transaction.
 ///
 ///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
-///      on-chain, which anyone can do with its signature, or partially filled. Policy changes and
-///      subscription lapses reach those orders only through a cancel or a counter bump.
+///      on-chain, which anyone can do with its signature, or partially filled. Policy changes reach
+///      those orders only through a cancel or a counter bump.
 ///
-///      Signing is also gated on the keeper service being paid for, which the vault checks against
-///      `subscriptions`. A lapse stops new orders and kills outstanding ones Seaport still checks,
-///      but never touches custody: withdrawals, cancels and policy keep working, so a vault is
-///      never held hostage.
+///      The keeper enforces free-tier listing and offer limits offchain. Direct buys require an
+///      active subscription, which the vault checks against `subscriptions`. A lapse leaves order
+///      signatures, withdrawals, cancels and policy working, so a vault is never held hostage.
+///      The registry can separately block new order validation and direct buys, including paid
+///      vaults. Withdrawals, cancellations and policy remain available while blocked.
 contract ListoorVault is Ownable2Step, IERC1271 {
     using SafeERC20 for IERC20;
 
@@ -69,7 +71,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice The only operator the vault ever approves: Seaport's conduit for OpenSea's key.
     address public immutable conduit;
 
-    /// @notice Where the vault checks its keeper service is paid for, typically its factory.
+    /// @notice Subscription entitlement and trading blocklist, typically the vault's factory.
     ISubscriptionRegistry public immutable subscriptions;
 
     bytes32 private immutable seaportVersionHash;
@@ -131,6 +133,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error NativeBuyAllowanceExceeded(uint256 allowance, uint256 value);
     error FeeShareTooHigh(uint256 fees, uint256 total);
     error SubscriptionInactive();
+    error VaultBlocked();
     error SubscriptionCostAboveMax(uint256 cost, uint256 maxCost);
     error ItemNotReceivedByVault(address recipient);
     error NoNftConsideration();
@@ -215,7 +218,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
             return IERC1271.isValidSignature.selector;
         }
 
-        if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
+        if (subscriptions.isBlocked(address(this))) revert VaultBlocked();
 
         (OrderComponents memory order, bytes memory orderSignature) =
             abi.decode(signature, (OrderComponents, bytes));
@@ -350,6 +353,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         onlyOwnerOrKeeper
         returns (bool)
     {
+        if (subscriptions.isBlocked(address(this))) revert VaultBlocked();
         if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
         if (order.parameters.offerer == address(this)) revert InvalidOfferer();
 

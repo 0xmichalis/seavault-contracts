@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 /// @notice Wrapped-native-token surface used by the vault to move between the native asset it
 ///         receives from sales and the wrapped one it needs to bid with.
+/// @custom:security-contact security@kazani.ch
 interface IWETH {
     function deposit() external payable;
 

@@ -36,6 +36,9 @@ contracts. Dependency changes must update both `[dependencies]` and the manual r
 - [Architecture](docs/ARCHITECTURE.md): contracts, security model, deposits, discovery and signatures.
 - [Deployment](docs/DEPLOYMENT.md): prediction, deployment and account configuration.
 
-Keeper limits bound what a compromised key can trade. Tightening policy or a subscription lapse
-cannot revoke orders Seaport already validated; cancel those orders or increment the counter.
+Keeper limits bound what a compromised key can trade. Tightening policy cannot revoke orders
+Seaport already validated; cancel those orders or increment the counter. Free-tier listing and
+offer quotas are enforced by the keeper; direct buys require an active subscription.
+The factory owner can block order validation and direct buys for individual vaults, including paid
+ones. Withdrawals and cancellations remain available.
 See the architecture document for the full security model.

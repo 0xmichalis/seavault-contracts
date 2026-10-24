@@ -20,7 +20,7 @@ import {MockERC721} from "./mocks/TokenMocks.sol";
 
 /// @notice End-to-end fills against the real Seaport and OpenSea conduit, with the vault created
 ///         through the factory: Seaport calls the vault's `isValidSignature`, the conduit moves the
-///         assets, and policy failures or a lapsed subscription block the fill.
+///         assets, and policy failures block the fill while free-tier orders remain fillable.
 contract ListoorVaultFulfillForkTest is BaseFork {
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
     uint256 internal constant TOKEN_ID = 42;
@@ -82,8 +82,8 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         SEAPORT.fulfillOrder{value: 1 wei}(order, bytes32(0));
     }
 
-    /// @dev A lapsed subscription kills live orders too, and paying revives them without resigning.
-    function test_lapsedSubscriptionBlocksFillUntilRenewed() public {
+    /// @dev Free-tier orders remain fillable after the paid window ends.
+    function test_lapsedSubscriptionStillAllowsListingFill() public {
         vm.prank(factoryOwner);
         factory.setSubscription(factoryOwner, 0.01 ether);
 
@@ -93,17 +93,61 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         Order memory order = _signed(components);
         vm.warp(factory.paidThrough(address(vault)) + 1);
 
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
-        vm.prank(taker);
-        SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
-
-        vm.deal(owner, 0.01 ether);
-        vm.prank(owner);
-        factory.extendSubscription{value: 0.01 ether}(address(vault), 1);
+        assertFalse(factory.isSubscribed(address(vault)));
 
         vm.prank(taker);
         assertTrue(SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0)));
         assertEq(nft.ownerOf(TOKEN_ID), taker);
+    }
+
+    function test_blockingStopsUnvalidatedOrdersAndUnblockingRestoresThem() public {
+        nft.mint(address(vault), TOKEN_ID);
+        Order memory order = _signed(_listing(PRICE));
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vm.prank(taker);
+        SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
+        assertEq(nft.ownerOf(TOKEN_ID), address(vault));
+
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), false);
+        vm.prank(taker);
+        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0)));
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+    }
+
+    /// @dev A block cannot reach orders Seaport has already validated; those need cancellation.
+    function test_validatedListingStillFillsWhileBlocked() public {
+        nft.mint(address(vault), TOKEN_ID);
+        Order[] memory orders = new Order[](1);
+        orders[0] = _signed(_listing(PRICE));
+        SEAPORT.validate(orders);
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.prank(taker);
+        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0)));
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+    }
+
+    function test_blockedKeeperCanCancelValidatedListing() public {
+        nft.mint(address(vault), TOKEN_ID);
+        OrderComponents[] memory components = new OrderComponents[](1);
+        components[0] = _listing(PRICE);
+        Order[] memory orders = new Order[](1);
+        orders[0] = _signed(components[0]);
+        SEAPORT.validate(orders);
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.prank(keeper);
+        assertTrue(vault.cancelOrders(components));
+        vm.expectRevert();
+        vm.prank(taker);
+        SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0));
+        assertEq(nft.ownerOf(TOKEN_ID), address(vault));
     }
 
     function test_takerFillsVaultOffer() public {
@@ -183,6 +227,29 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(nft.ownerOf(TOKEN_ID), owner);
         assertEq(seller.balance, PRICE);
         assertEq(address(vault).balance, 0);
+    }
+
+    function test_blockingStopsDirectBuysUntilUnblocked() public {
+        (address seller, uint256 sellerPk) = makeAddrAndKey("seller");
+        nft.mint(seller, TOKEN_ID);
+        vm.prank(seller);
+        nft.setApprovalForAll(address(SEAPORT), true);
+        vm.deal(address(vault), PRICE);
+        AdvancedOrder memory order = _sellersListing(seller, sellerPk, address(0));
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vm.prank(keeper);
+        vault.buy(order, bytes32(0));
+        assertEq(nft.ownerOf(TOKEN_ID), seller);
+        assertEq(address(vault).balance, PRICE);
+
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), false);
+        vm.prank(keeper);
+        assertTrue(vault.buy(order, bytes32(0)));
+        assertEq(nft.ownerOf(TOKEN_ID), owner);
     }
 
     /// @dev WETH leaves through the vault's conduit allowance, the same cap its bids draw on.

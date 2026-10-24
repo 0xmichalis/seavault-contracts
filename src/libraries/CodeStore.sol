@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 /// @title CodeStore
+/// @custom:security-contact security@kazani.ch
 /// @notice Keeps a blob as the runtime code of a contract of its own, so a contract can deploy init
 ///         code larger than it could carry in its own bytecode.
 /// @dev The stored code opens with a STOP byte, so calling the store never executes the blob.
