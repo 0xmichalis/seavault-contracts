@@ -81,8 +81,9 @@ Everything below is called on the vault by its owner.
    posting: a listing whose marketplace fee plus creator earnings exceed it fails validation.
 8. Move the NFTs, the WETH and the ETH buys spend in, then point the keeper at the vault and watch it
    in dry-run mode before letting it post orders.
-9. Before the trial runs out, `extendSubscription` from any wallet or `renewSubscription` from the
-   vault's own balance.
+9. To retain full keeper access after the trial, `extendSubscription` from any wallet or
+   `renewSubscription` from the vault's own balance. Lapsed accounts retain the keeper's free-tier
+   listings and offers, but cannot snipe. A zero effective subscription price grants full access.
 
 ## New versions and migration
 

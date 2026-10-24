@@ -45,13 +45,12 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      below a floor needs an owner transaction.
 ///
 ///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
-///      on-chain, which anyone can do with its signature, or partially filled. Policy changes and
-///      subscription lapses reach those orders only through a cancel or a counter bump.
+///      on-chain, which anyone can do with its signature, or partially filled. Policy changes reach
+///      those orders only through a cancel or a counter bump.
 ///
-///      Signing is also gated on the keeper service being paid for, which the vault checks against
-///      `subscriptions`. A lapse stops new orders and kills outstanding ones Seaport still checks,
-///      but never touches custody: withdrawals, cancels and policy keep working, so a vault is
-///      never held hostage.
+///      The keeper enforces free-tier listing and offer limits offchain. Direct buys require an
+///      active subscription, which the vault checks against `subscriptions`. A lapse leaves order
+///      signatures, withdrawals, cancels and policy working, so a vault is never held hostage.
 contract ListoorVault is Ownable2Step, IERC1271 {
     using SafeERC20 for IERC20;
 
@@ -69,7 +68,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice The only operator the vault ever approves: Seaport's conduit for OpenSea's key.
     address public immutable conduit;
 
-    /// @notice Where the vault checks its keeper service is paid for, typically its factory.
+    /// @notice Where the vault checks access to paid keeper features, typically its factory.
     ISubscriptionRegistry public immutable subscriptions;
 
     bytes32 private immutable seaportVersionHash;
@@ -214,8 +213,6 @@ contract ListoorVault is Ownable2Step, IERC1271 {
             }
             return IERC1271.isValidSignature.selector;
         }
-
-        if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
 
         (OrderComponents memory order, bytes memory orderSignature) =
             abi.decode(signature, (OrderComponents, bytes));

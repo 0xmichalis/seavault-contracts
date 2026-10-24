@@ -8,7 +8,7 @@ import {OrderComponents} from "seaport-types/src/lib/ConsiderationStructs.sol";
 import {ListoorVault} from "../src/ListoorVault.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
-/// @notice What a lapsed subscription does to a vault: signing stops, custody does not.
+/// @notice A lapsed subscription preserves free-tier signing and owner control.
 contract ListoorVaultSubscriptionTest is VaultTest {
     bytes4 internal constant MAGIC_VALUE = IERC1271.isValidSignature.selector;
 
@@ -17,32 +17,28 @@ contract ListoorVaultSubscriptionTest is VaultTest {
         assertEq(validate(offer(CEILING)), MAGIC_VALUE);
     }
 
-    function test_refusesToSignOnceLapsed() public {
+    function test_freeTierStillSignsOnceLapsed() public {
+        subscriptions.set(false, 0.01 ether);
+
+        assertEq(validate(listing(FLOOR)), MAGIC_VALUE);
+        assertEq(validate(offer(CEILING)), MAGIC_VALUE);
+    }
+
+    /// @dev Free-tier signatures must still obey every owner-set trading policy.
+    function test_policyStillAppliesOnceLapsed() public {
         subscriptions.set(false, 0.01 ether);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.SubscriptionInactive.selector), listing(FLOOR)
-        );
-        expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.SubscriptionInactive.selector), offer(CEILING)
+            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR, 1 wei),
+            listing(1 wei)
         );
     }
 
-    /// @dev Checked before anything else, so an unpaid vault reports the lapse rather than some
-    ///      downstream policy complaint.
-    function test_lapseTakesPrecedenceOverPolicyFailures() public {
-        subscriptions.set(false, 0.01 ether);
-
-        expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.SubscriptionInactive.selector), listing(1 wei)
-        );
-    }
-
-    /// @dev Live orders die with the lapse and come back when it is paid, without resigning.
-    function test_signingResumesAfterRenewal() public {
+    /// @dev Subscription changes do not invalidate otherwise valid listings and offers.
+    function test_signaturesSurviveLapseAndRenewal() public {
         OrderComponents memory order = listing(FLOOR);
         subscriptions.set(false, 0.01 ether);
-        expectRevertOn(abi.encodeWithSelector(ListoorVault.SubscriptionInactive.selector), order);
+        assertEq(validate(order), MAGIC_VALUE);
 
         subscriptions.set(true, 0.01 ether);
         assertEq(validate(order), MAGIC_VALUE);

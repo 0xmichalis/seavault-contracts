@@ -26,7 +26,7 @@ construction.
   floor.
 - **Seaport stops asking the vault once an order is validated on-chain or partially filled.** Anyone
   can validate a posted order with its signature, and collection offers with a quantity fill
-  partially as a matter of course. Policy changes and subscription lapses do not reach those orders.
+  partially as a matter of course. Policy changes do not reach those orders.
 - `setKeeper` bumps the vault's Seaport counter, so it revokes every outstanding order at once,
   validated or not. `incrementCounter` (owner) does the same without rotating, and `cancelOrders`
   (owner or keeper) retracts single orders. Cancel or bump after tightening policy if live orders
@@ -80,7 +80,8 @@ any order with a consideration item it cannot attribute to itself or the collect
 first consideration item pays anyone but the offerer, and only accepts its own two zones. So there is
 no room in a posted order for a protocol cut.
 
-Instead the factory doubles as a subscription registry, and the vault checks it before signing:
+Instead the factory doubles as a subscription registry. The keeper reads it for tier access, and
+the vault checks it before direct buys:
 
 - Vaults are created with a **trial window** (`trialPeriod`, 30 days by default), so a fresh vault
   trades immediately.
@@ -92,18 +93,20 @@ Instead the factory doubles as a subscription registry, and the vault checks it 
   and reverts if a price change has pushed the cost above `maxCost`. Owner only:
   letting the keeper spend vault funds — even on the service — hands a compromised key a way to burn
   them. Keepers should watch `paidThrough` and raise the alarm instead.
-- **A lapse stops signing, nothing else.** `isValidSignature` reverts with `SubscriptionInactive`, so
-  new orders cannot be made and outstanding ones stop filling, except orders Seaport has already
-  validated or partially filled. Withdrawals, cancels,
-  `incrementCounter` and every policy setter keep working, so a vault is never held hostage. Paying
-  revives outstanding orders without resigning them.
+- **A lapse returns the keeper to the free tier.** The keeper allows three configured listings and
+  three configured offers per vault on each chain, and disables snipes. `isValidSignature` still
+  verifies the keeper and every owner-set policy, so free-tier orders can be posted and filled.
+  `buy` reverts with `SubscriptionInactive` while lapsed. Withdrawals, cancels, `incrementCounter`
+  and every policy setter keep working, so a vault is never held hostage. Usage quotas restrict the
+  keeper service; owners can choose their own keeper and are not bound to its quotas.
 - **Paid time can only grow.** There is no code path that shortens `paidThrough`; raising the price or
   cutting the trial applies to future purchases only. That, plus unconditional custody, is what makes
   the gate safe to depend on.
-- `setPriceOverride(vault, enabled, price)` prices individual vaults off-schedule — zero for partner,
-  subscriber or in-house vaults, or a discount.
+- `setPriceOverride(vault, enabled, price)` prices individual vaults off-schedule — zero grants
+  full-access exceptions for partner, subscriber or in-house vaults, or a discount.
 - Shipping default is **free** (`subscriptionPrice = 0`), which makes every vault subscribed
-  regardless of the clock, so a fresh deployment is usable before any pricing decision is made.
+  regardless of the clock and disables keeper tier restrictions. A positive per-vault override
+  still follows its own subscription terms.
 
 A per-fill cut is still possible on the **buy path** (`buy`), where the vault fulfills someone else's
 order and the transaction is ours to build rather than the orderbook's to validate. `buy` does not

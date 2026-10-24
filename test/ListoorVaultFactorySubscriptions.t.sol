@@ -25,9 +25,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
         period = factory.SUBSCRIPTION_PERIOD();
         // `createVault` needs CreateX, which only exists on a fork, so registration is written
         // directly here. Slot is located by probing rather than hardcoded.
-        stdstore.target(address(factory))
-            .sig(factory.isVault.selector)
-            .with_key(vault)
+        stdstore.target(address(factory)).sig(factory.isVault.selector).with_key(vault)
             .checked_write(true);
         vm.deal(payer, 100 ether);
     }
@@ -45,6 +43,18 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
 
         assertTrue(factory.isSubscribed(vault));
         assertTrue(factory.isSubscribed(makeAddr("neverRegistered")));
+    }
+
+    function test_zeroPriceRestoresFullAccessWithoutExtendingPaidTime() public {
+        _priced();
+        assertFalse(factory.isSubscribed(vault));
+        uint256 expiry = factory.paidThrough(vault);
+
+        vm.prank(factoryOwner);
+        factory.setSubscription(recipient, 0);
+
+        assertTrue(factory.isSubscribed(vault));
+        assertEq(factory.paidThrough(vault), expiry);
     }
 
     function test_setSubscription() public {

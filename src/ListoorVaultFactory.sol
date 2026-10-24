@@ -30,11 +30,12 @@ import {CodeStore} from "./libraries/CodeStore.sol";
 ///      CreateX for a permissioned, chain-independent deploy: no other caller can occupy a vault
 ///      address before its owner claims it, on this chain or any other.
 ///
-///      The factory doubles as the subscription registry its vaults check before signing. Vaults are
-///      created with a trial period; after that, someone has to buy periods for them or the vault
-///      stops signing. Paid time can only be extended, never revoked, so a paid window is guaranteed
-///      by code even if the factory owner turns hostile — and a lapse never touches custody, since
-///      the vault owner keeps withdrawals, cancels and policy throughout.
+///      The factory doubles as the subscription registry its vaults check before buying. Vaults are
+///      created with a trial period; after that, someone has to buy periods for full keeper access.
+///      The keeper enforces free-tier listing and offer limits offchain. Paid time can only be
+///      extended, never revoked, so a paid window is guaranteed by code even if the factory owner
+///      turns hostile — and a lapse never touches custody, since the vault owner keeps withdrawals,
+///      cancels and policy throughout.
 ///
 ///      A per-vault price override prices individual vaults off-schedule, zero making one free.
 contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnershipRegistry {

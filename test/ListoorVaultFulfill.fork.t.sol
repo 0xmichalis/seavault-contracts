@@ -20,7 +20,7 @@ import {MockERC721} from "./mocks/TokenMocks.sol";
 
 /// @notice End-to-end fills against the real Seaport and OpenSea conduit, with the vault created
 ///         through the factory: Seaport calls the vault's `isValidSignature`, the conduit moves the
-///         assets, and policy failures or a lapsed subscription block the fill.
+///         assets, and policy failures block the fill while free-tier orders remain fillable.
 contract ListoorVaultFulfillForkTest is BaseFork {
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
     uint256 internal constant TOKEN_ID = 42;
@@ -82,8 +82,8 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         SEAPORT.fulfillOrder{value: 1 wei}(order, bytes32(0));
     }
 
-    /// @dev A lapsed subscription kills live orders too, and paying revives them without resigning.
-    function test_lapsedSubscriptionBlocksFillUntilRenewed() public {
+    /// @dev Free-tier orders remain fillable after the paid window ends.
+    function test_lapsedSubscriptionStillAllowsListingFill() public {
         vm.prank(factoryOwner);
         factory.setSubscription(factoryOwner, 0.01 ether);
 
@@ -93,13 +93,7 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         Order memory order = _signed(components);
         vm.warp(factory.paidThrough(address(vault)) + 1);
 
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
-        vm.prank(taker);
-        SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
-
-        vm.deal(owner, 0.01 ether);
-        vm.prank(owner);
-        factory.extendSubscription{value: 0.01 ether}(address(vault), 1);
+        assertFalse(factory.isSubscribed(address(vault)));
 
         vm.prank(taker);
         assertTrue(SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0)));
