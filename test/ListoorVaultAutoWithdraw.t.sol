@@ -6,7 +6,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ListoorVault} from "../src/ListoorVault.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
-/// @notice Automatic withdrawals require current owner consent and subscription entitlement.
+/// @notice Automatic withdrawals require owner consent, subscription entitlement and an unblocked vault.
 contract ListoorVaultAutoWithdrawTest is VaultTest {
     function test_disabledByDefaultEvenForSubscribers() public {
         assertFalse(vault.autoWithdrawEnabled());
@@ -42,6 +42,15 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
         subscriptions.set(false, 0.01 ether);
 
         vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
+        vm.prank(owner);
+        vault.setAutoWithdrawEnabled(true);
+        assertFalse(vault.autoWithdrawEnabled());
+    }
+
+    function test_cannotEnableWhileBlocked() public {
+        subscriptions.setBlocked(true);
+
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
         vm.prank(owner);
         vault.setAutoWithdrawEnabled(true);
         assertFalse(vault.autoWithdrawEnabled());
@@ -155,12 +164,26 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
         vm.stopPrank();
     }
 
-    function test_blockingTradingStillAllowsSubscribedAutomaticWithdrawals() public {
+    function test_blockingPausesAutomaticWithdrawalsUntilUnblocked() public {
         _enable();
         _fundVault();
         subscriptions.setBlocked(true);
         uint256 ownerBalance = owner.balance;
 
+        address[2] memory callers = [owner, keeper];
+        for (uint256 i; i < callers.length; ++i) {
+            vm.startPrank(callers[i]);
+            vm.expectRevert(ListoorVault.VaultBlocked.selector);
+            vault.autoWithdrawETH(1 ether);
+            vm.expectRevert(ListoorVault.VaultBlocked.selector);
+            vault.autoWithdrawERC20(address(weth), 1 ether);
+            vm.stopPrank();
+        }
+        assertTrue(vault.autoWithdrawEnabled());
+        assertEq(address(vault).balance, 1 ether);
+        assertEq(weth.balanceOf(address(vault)), 1 ether);
+
+        subscriptions.setBlocked(false);
         vm.startPrank(keeper);
         vault.autoWithdrawETH(1 ether);
         vault.autoWithdrawERC20(address(weth), 1 ether);
@@ -168,6 +191,25 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
 
         assertEq(owner.balance, ownerBalance + 1 ether);
         assertEq(weth.balanceOf(owner), 1 ether);
+    }
+
+    function test_unblockingDoesNotBypassSubscriptionRequirement() public {
+        _enable();
+        _fundVault();
+        subscriptions.setBlocked(true);
+        subscriptions.set(false, 0.01 ether);
+        subscriptions.setBlocked(false);
+
+        vm.startPrank(keeper);
+        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
+        vault.autoWithdrawETH(1 ether);
+        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
+        vault.autoWithdrawERC20(address(weth), 1 ether);
+        vm.stopPrank();
+
+        assertTrue(vault.autoWithdrawEnabled());
+        assertEq(address(vault).balance, 1 ether);
+        assertEq(weth.balanceOf(address(vault)), 1 ether);
     }
 
     function test_ownerWithdrawalsRemainAvailableAfterExpiryAndBlocking() public {

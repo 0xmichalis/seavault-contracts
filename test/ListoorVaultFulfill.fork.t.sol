@@ -145,6 +145,48 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(address(vault).balance, 0);
     }
 
+    function test_blockingPausesAutomaticWithdrawalsUntilUnblocked() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.01 ether);
+        vm.prank(owner);
+        vault.setAutoWithdrawEnabled(true);
+        vm.deal(address(vault), PRICE);
+        deal(WETH, address(vault), PRICE);
+        uint256 ownerWethBalance = IERC20(WETH).balanceOf(owner);
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.startPrank(keeper);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vault.autoWithdrawETH(PRICE);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vault.autoWithdrawERC20(WETH, PRICE);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        vault.renewSubscription(1, 0.01 ether);
+        assertTrue(factory.isSubscribed(address(vault)));
+        vm.startPrank(keeper);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vault.autoWithdrawETH(PRICE - 0.01 ether);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vault.autoWithdrawERC20(WETH, PRICE);
+        vm.stopPrank();
+        assertTrue(vault.autoWithdrawEnabled());
+
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), false);
+        vm.expectCall(owner, PRICE - 0.01 ether, bytes(""));
+        vm.startPrank(keeper);
+        vault.autoWithdrawETH(PRICE - 0.01 ether);
+        vault.autoWithdrawERC20(WETH, PRICE);
+        vm.stopPrank();
+
+        assertEq(address(vault).balance, 0);
+        assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
+        assertEq(IERC20(WETH).balanceOf(owner), ownerWethBalance + PRICE);
+    }
+
     /// @dev A dump listing is unfillable even though the keeper key signed it, and the vault's revert
     ///      reason surfaces through Seaport.
     function test_seaportRejectsListingBelowFloor() public {

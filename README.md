@@ -2,8 +2,8 @@
 
 Non-custodial Seaport trading accounts.
 Owners deposit assets and set trading limits; a keeper signs orders and buys within those limits.
-Owners can always withdraw assets. Subscribers can opt into keeper-triggered ETH/ERC20 withdrawals
-that send funds only to the current owner.
+Owners can always withdraw assets. Unblocked subscribers can opt into keeper-triggered ETH/ERC20
+withdrawals that send funds only to the current owner.
 
 - EIP-1271 order validation with listing floors, offer ceilings and spending allowances.
 - Deterministic factory and vault deployment through CreateX.
@@ -40,6 +40,6 @@ contracts. Dependency changes must update both `[dependencies]` and the manual r
 Keeper limits bound what a compromised key can trade. Tightening policy cannot revoke orders
 Seaport already validated; cancel those orders or increment the counter. Free-tier listing and
 offer quotas are enforced by the keeper; direct buys require an active subscription.
-The factory owner can block order validation and direct buys for individual vaults, including paid
-ones. Withdrawals and cancellations remain available.
+The factory owner can block order validation, direct buys and automatic withdrawals for individual
+vaults, including paid ones. Manual owner withdrawals and cancellations remain available.
 See the architecture document for the full security model.

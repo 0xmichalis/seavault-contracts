@@ -34,9 +34,9 @@ import {CodeStore} from "./libraries/CodeStore.sol";
 ///      The factory doubles as the subscription registry its vaults check before buying. Vaults are
 ///      created with a trial period; after that, someone has to buy periods for full keeper access.
 ///      The keeper enforces free-tier listing and offer limits offchain. Paid time can only be
-///      extended, never revoked. The factory owner can separately block trading for individual
-///      vaults, including paid ones. Neither a lapse nor a block touches custody: the vault owner
-///      keeps withdrawals, cancels and policy throughout.
+///      extended, never revoked. The factory owner can separately block trading and automatic
+///      withdrawals for individual vaults, including paid ones. Neither a lapse nor a block touches
+///      custody: the vault owner keeps manual withdrawals, cancels and other policy throughout.
 ///
 ///      A per-vault price override prices individual vaults off-schedule, zero making one free.
 contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnershipRegistry {
@@ -83,7 +83,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
     mapping(address owner => address vault) public ownedVaultOf;
     mapping(address pendingOwner => EnumerableSet.AddressSet vaults) private _pendingVaults;
 
-    /// @notice Blocks order validation and direct buys independently of subscription entitlement.
+    /// @notice Blocks order validation, direct buys and automatic withdrawals regardless of paid time.
     mapping(address vault => bool blocked) public override isBlocked;
 
     /// @notice Where the vault's creation code is kept; `CodeStore.read` returns it verbatim.
@@ -211,9 +211,9 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
                               SUBSCRIPTIONS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Blocks or unblocks a registered vault's trading, including paid vaults.
+    /// @notice Blocks or unblocks a registered vault's trading and automatic withdrawals.
     /// @dev Does not revoke orders Seaport already validated; those need cancellation or a counter
-    ///      bump. Withdrawals, cancellations and owner-set policy remain available.
+    ///      bump. Owner withdrawals, cancellations and other owner-set policy remain available.
     function setBlocked(address vault, bool blocked) external onlyOwner {
         if (!isVault[vault]) revert NotAVault(vault);
         isBlocked[vault] = blocked;

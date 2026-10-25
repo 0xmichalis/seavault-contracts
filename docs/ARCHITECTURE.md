@@ -100,12 +100,13 @@ the vault checks it before direct buys and automatic withdrawals:
   three configured offers per vault on each chain, and disables snipes. `isValidSignature` still
   verifies the keeper and every owner-set policy, so free-tier orders can be posted and filled.
   `buy` and automatic withdrawals revert with `SubscriptionInactive` while lapsed. Owner withdrawals,
-  cancels, `incrementCounter` and policy setters keep working; enabling automatic withdrawals requires
-  a subscription, but disabling them is always available. Usage quotas restrict the keeper service;
-  owners can choose their own keeper and are not bound to its quotas.
+  cancels, `incrementCounter` and other policy setters keep working; enabling automatic withdrawals
+  requires a subscription and an unblocked vault, but disabling them is always available. Usage quotas
+  restrict the keeper service; owners can choose their own keeper and are not bound to its quotas.
 - **Paid time can only grow.** There is no code path that shortens `paidThrough`; raising the price or
   cutting the trial applies to future purchases only. Blocking a vault preserves its paid time but
-  can suspend trading during that window; withdrawals remain available.
+  can suspend trading and automatic withdrawals during that window; owner withdrawals remain
+  available.
 - `setPriceOverride(vault, enabled, price)` prices individual vaults off-schedule — zero grants
   full-access exceptions for partner, subscriber or in-house vaults, or a discount.
 - Shipping default is **free** (`subscriptionPrice = 0`), which makes every vault subscribed
@@ -118,18 +119,20 @@ take one yet.
 
 ## Automatic withdrawals
 
-Automatic withdrawals start disabled. A subscribed owner calls `setAutoWithdrawEnabled(true)` to
-let the keeper call `autoWithdrawETH(amount)` or `autoWithdrawERC20(token, amount)`. The owner may
-also call these methods. Both send only to `owner()`; neither accepts a recipient. The keeper submits
-each transaction and pays its gas. These methods do not run automatically on deposits or sale fills;
+Automatic withdrawals start disabled. A subscribed owner of an unblocked vault calls
+`setAutoWithdrawEnabled(true)` to let the keeper call `autoWithdrawETH(amount)` or
+`autoWithdrawERC20(token, amount)`. The owner may also call these methods. Both send only to
+`owner()`; neither accepts a recipient. The keeper submits each transaction and pays its gas.
+These methods do not run automatically on deposits or sale fills;
 the keeper service must watch balances and submit withdrawals. They return funds held by the vault,
 including deposits, so enabling them can reduce funds available for bids and buys.
 
-Every automatic withdrawal checks the current subscription. Trials and zero-price entitlement
-qualify under the existing `isSubscribed` rules. A lapse pauses execution without clearing the opt-in,
-so renewal resumes it. The owner may disable it even while lapsed or blocked. Accepting ownership
-from another wallet clears the opt-in; the new owner must enable it again. Trading blocks do not
-prevent returning funds to the owner, but the subscription requirement still applies.
+Every automatic withdrawal checks the current subscription and block status, whether called by the
+owner or the keeper. Trials and zero-price entitlement qualify under the existing `isSubscribed`
+rules. A lapse or block pauses execution without clearing the opt-in; execution resumes once the
+vault is both subscribed and unblocked. Renewing or granting a zero-price override does not bypass
+a block. The owner may disable the feature even while lapsed or blocked. Accepting ownership from
+another wallet clears the opt-in; the new owner must enable it again.
 
 Manual `withdrawETH`, `withdrawERC20`, `withdrawERC721` and `withdrawERC1155` remain owner-only,
 allow owner-chosen recipients and require neither a subscription nor the opt-in. Existing immutable
@@ -139,13 +142,15 @@ vaults need migration to a new factory version to gain automatic withdrawals.
 
 Vaults start unblocked. The factory owner calls `setBlocked(vault, blocked)` for a registered vault;
 `isBlocked(vault)` exposes the status and `VaultBlockStatusUpdated` records changes. Blocking is
-independent of subscription entitlement: it rejects ordinary `isValidSignature` validation and
-`buy` for free, paid and zero-price vaults. Paying, renewing or changing price overrides does not
-remove a block. Unblocking restores valid outstanding signatures without resigning them.
+independent of subscription entitlement: it rejects ordinary `isValidSignature` validation, `buy`,
+enabling automatic withdrawals and both automatic withdrawal methods for free, paid and zero-price
+vaults. Paying, renewing or changing price overrides does not remove a block. Unblocking restores
+valid outstanding signatures without resigning them.
 
-Gasless cancellation signatures, `cancelOrders`, `incrementCounter`, withdrawals and owner-set
-policy remain available. A block does not invalidate orders Seaport already validated or partially
-filled; cancel those orders or increment the counter. Older immutable vaults do not acquire this
+Gasless cancellation signatures, `cancelOrders`, `incrementCounter`, manual owner withdrawals,
+disabling automatic withdrawals and other owner-set policy remain available. A block does not
+invalidate orders Seaport already validated or partially filled; cancel those orders or increment
+the counter. Older immutable vaults do not acquire this
 gate through a factory or keeper update and need migration to enforce it onchain.
 
 ## Layout

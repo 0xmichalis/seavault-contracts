@@ -52,8 +52,8 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      The keeper enforces free-tier listing and offer limits offchain. Direct buys and automatic
 ///      withdrawals require an active subscription, checked against `subscriptions`. A lapse leaves
 ///      order signatures, owner withdrawals, cancels and policy working, so custody is never hostage.
-///      The registry can separately block new order validation and direct buys, including paid
-///      vaults. Withdrawals, cancellations and policy remain available while blocked.
+///      The registry can separately block new order validation, direct buys and automatic withdrawals,
+///      including paid vaults. Owner withdrawals, cancellations and other policy remain available.
 contract ListoorVault is Ownable2Step, IERC1271 {
     using SafeERC20 for IERC20;
 
@@ -309,9 +309,12 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         emit MaxFeeBpsUpdated(newMaxFeeBps);
     }
 
-    /// @notice Opts into automatic withdrawals while subscribed, or opts out at any time.
+    /// @notice Opts into automatic withdrawals while subscribed and unblocked, or opts out any time.
     function setAutoWithdrawEnabled(bool enabled) external onlyOwner {
-        if (enabled && !subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
+        if (enabled) {
+            if (subscriptions.isBlocked(address(this))) revert VaultBlocked();
+            if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
+        }
         autoWithdrawEnabled = enabled;
         emit AutoWithdrawEnabledUpdated(enabled);
     }
@@ -457,7 +460,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         subscriptions.extendSubscription{value: cost}(address(this), periods);
     }
 
-    /// @notice Returns ETH to the current owner after opt-in, while subscribed.
+    /// @notice Returns ETH to the current owner after opt-in, while subscribed and unblocked.
     /// @dev The keeper submits the transaction and pays gas; the recipient cannot be chosen.
     function autoWithdrawETH(uint256 amount) external onlyOwnerOrKeeper {
         _checkAutoWithdraw();
@@ -466,7 +469,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         emit EthWithdrawn(to, amount);
     }
 
-    /// @notice Returns ERC20 funds to the current owner after opt-in, while subscribed.
+    /// @notice Returns ERC20 funds to the current owner after opt-in, while subscribed and unblocked.
     function autoWithdrawERC20(address token, uint256 amount) external onlyOwnerOrKeeper {
         _checkAutoWithdraw();
         IERC20(token).safeTransfer(owner(), amount);
@@ -650,6 +653,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
     function _checkAutoWithdraw() private view {
         if (!autoWithdrawEnabled) revert AutoWithdrawDisabled();
+        if (subscriptions.isBlocked(address(this))) revert VaultBlocked();
         if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
     }
 }
