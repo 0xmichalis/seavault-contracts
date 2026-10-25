@@ -31,8 +31,8 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 /// @custom:security-contact security@kazani.ch
 /// @notice Custody for NFTs and wrapped native tokens that authorizes a hot "keeper" key to sign
 ///         Seaport orders on its behalf via EIP-1271, so the key trading the assets never owns them.
-/// @dev The keeper key never moves assets: it can only produce signatures that Seaport accepts, and
-///      only for orders that satisfy owner-set policy. Rotating `keeper` also bumps the vault's
+/// @dev The keeper trades only within owner-set policy. With owner opt-in and an active subscription,
+///      it can also return ETH and ERC20 funds to the owner. Rotating `keeper` also bumps the vault's
 ///      Seaport counter, which revokes every outstanding order at once.
 ///
 ///      A digest alone says nothing about what is being sold, so the signature blob carries the
@@ -49,9 +49,9 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      on-chain, which anyone can do with its signature, or partially filled. Policy changes reach
 ///      those orders only through a cancel or a counter bump.
 ///
-///      The keeper enforces free-tier listing and offer limits offchain. Direct buys require an
-///      active subscription, which the vault checks against `subscriptions`. A lapse leaves order
-///      signatures, withdrawals, cancels and policy working, so a vault is never held hostage.
+///      The keeper enforces free-tier listing and offer limits offchain. Direct buys and automatic
+///      withdrawals require an active subscription, checked against `subscriptions`. A lapse leaves
+///      order signatures, owner withdrawals, cancels and policy working, so custody is never hostage.
 ///      The registry can separately block new order validation and direct buys, including paid
 ///      vaults. Withdrawals, cancellations and policy remain available while blocked.
 contract ListoorVault is Ownable2Step, IERC1271 {
@@ -102,6 +102,10 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice Native ETH buys may still spend. ERC20 buys draw on the conduit allowance, as bids do.
     uint256 public nativeBuyAllowance;
 
+    /// @notice Owner opt-in to keeper-triggered ETH and ERC20 withdrawals to the current owner.
+    /// @dev Disabled by default and cleared when ownership changes. Execution requires a subscription.
+    bool public autoWithdrawEnabled;
+
     event KeeperUpdated(address keeper);
     event ListingFloorUpdated(address indexed collection, uint256 floorPerUnit);
     event TokenListingFloorUpdated(
@@ -112,6 +116,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     event MaxOrderDurationUpdated(uint256 maxOrderDuration);
     event MaxFeeBpsUpdated(uint256 maxFeeBps);
     event NativeBuyAllowanceUpdated(uint256 allowance);
+    event AutoWithdrawEnabledUpdated(bool enabled);
     event EthWithdrawn(address indexed to, uint256 amount);
 
     error ZeroAddress();
@@ -133,6 +138,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error NativeBuyAllowanceExceeded(uint256 allowance, uint256 value);
     error FeeShareTooHigh(uint256 fees, uint256 total);
     error SubscriptionInactive();
+    error AutoWithdrawDisabled();
     error VaultBlocked();
     error SubscriptionCostAboveMax(uint256 cost, uint256 maxCost);
     error ItemNotReceivedByVault(address recipient);
@@ -303,6 +309,13 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         emit MaxFeeBpsUpdated(newMaxFeeBps);
     }
 
+    /// @notice Opts into automatic withdrawals while subscribed, or opts out at any time.
+    function setAutoWithdrawEnabled(bool enabled) external onlyOwner {
+        if (enabled && !subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
+        autoWithdrawEnabled = enabled;
+        emit AutoWithdrawEnabledUpdated(enabled);
+    }
+
     /*//////////////////////////////////////////////////////////////
                                   OPS
     //////////////////////////////////////////////////////////////*/
@@ -407,12 +420,16 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         address previousOwner = owner();
         address previousPendingOwner = pendingOwner();
         super.acceptOwnership();
+        if (autoWithdrawEnabled && previousOwner != owner()) {
+            autoWithdrawEnabled = false;
+            emit AutoWithdrawEnabledUpdated(false);
+        }
         IVaultOwnershipRegistry(address(subscriptions))
             .syncVaultOwnership(previousOwner, previousPendingOwner);
     }
 
-    /// @dev Disabled: the owner is the only way assets leave the vault, and the only way to revoke
-    ///      the keeper. Renouncing would lock both forever. Use `transferOwnership` instead.
+    /// @dev Disabled: the owner controls withdrawals and is the only way to revoke the keeper.
+    ///      Renouncing would lock both forever. Use `transferOwnership` instead.
     function renounceOwnership() public pure override {
         revert OwnershipCannotBeRenounced();
     }
@@ -438,6 +455,21 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         uint256 cost = subscriptions.priceFor(address(this)) * periods;
         if (cost > maxCost) revert SubscriptionCostAboveMax(cost, maxCost);
         subscriptions.extendSubscription{value: cost}(address(this), periods);
+    }
+
+    /// @notice Returns ETH to the current owner after opt-in, while subscribed.
+    /// @dev The keeper submits the transaction and pays gas; the recipient cannot be chosen.
+    function autoWithdrawETH(uint256 amount) external onlyOwnerOrKeeper {
+        _checkAutoWithdraw();
+        address to = owner();
+        Address.sendValue(payable(to), amount);
+        emit EthWithdrawn(to, amount);
+    }
+
+    /// @notice Returns ERC20 funds to the current owner after opt-in, while subscribed.
+    function autoWithdrawERC20(address token, uint256 amount) external onlyOwnerOrKeeper {
+        _checkAutoWithdraw();
+        IERC20(token).safeTransfer(owner(), amount);
     }
 
     function withdrawETH(address to, uint256 amount) external onlyOwner {
@@ -614,5 +646,10 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         if (msg.sender != owner() && msg.sender != keeper) {
             revert NotOwnerOrKeeper(msg.sender);
         }
+    }
+
+    function _checkAutoWithdraw() private view {
+        if (!autoWithdrawEnabled) revert AutoWithdrawDisabled();
+        if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
     }
 }

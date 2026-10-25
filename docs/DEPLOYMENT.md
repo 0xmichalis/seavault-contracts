@@ -84,6 +84,11 @@ Everything below is called on the vault by its owner.
 9. To retain full keeper access after the trial, `extendSubscription` from any wallet or
    `renewSubscription` from the vault's own balance. Lapsed accounts retain the keeper's free-tier
    listings and offers, but cannot snipe. A zero effective subscription price grants full access.
+10. Optionally, while subscribed, call `setAutoWithdrawEnabled(true)` to let the keeper return ETH
+    and ERC20 balances to the current owner. It starts disabled; `setAutoWithdrawEnabled(false)` is
+    always available. Configure the keeper service to submit `autoWithdrawETH(amount)` and
+    `autoWithdrawERC20(token, amount)` transactions. Expiry pauses them and ownership changes clear
+    the opt-in. Manual owner withdrawals remain available throughout.
 
 ## New versions and migration
 

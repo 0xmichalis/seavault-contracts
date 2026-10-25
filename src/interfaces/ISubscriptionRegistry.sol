@@ -3,9 +3,10 @@ pragma solidity 0.8.28;
 
 /// @notice Where a vault checks subscription entitlement and trading access, typically its factory.
 /// @custom:security-contact security@kazani.ch
-/// @dev A lapsed subscription blocks direct buys; the keeper enforces free-tier listing and offer
-///      limits offchain. The blocklist separately gates order validation and direct buys, including
-///      paid vaults. Withdrawals, cancels and policy remain available. Paid time can only grow.
+/// @dev A lapsed subscription blocks direct buys and automatic withdrawals; the keeper enforces
+///      free-tier listing and offer limits offchain. The blocklist separately gates order validation
+///      and direct buys, including paid vaults. Owner withdrawals, cancels and policy remain available.
+///      Paid time can only grow.
 interface ISubscriptionRegistry {
     /// @notice Whether `vault` is blocked from order validation and direct buys.
     function isBlocked(address vault) external view returns (bool);

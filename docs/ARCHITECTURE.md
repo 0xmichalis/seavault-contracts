@@ -2,11 +2,12 @@
 
 EIP-1271 vault contracts for non-custodial Seaport order signing.
 
-`ListoorVault` holds the NFTs and wrapped native tokens. A hot **keeper** key is authorized only to
-_sign Seaport orders on the vault's behalf_ and to _buy listings for its owner_, never to move
-anything itself. The keeper does not have to be trusted: the vault signs only for sales at or above
-an owner-set floor and bids at or below an owner-set ceiling, and buys only within that ceiling and
-owner-set allowances, so the worst a compromised keeper can do is trade at those bounds.
+`ListoorVault` holds the NFTs and wrapped native tokens. A hot **keeper** key can _sign Seaport orders
+on the vault's behalf_ and _buy listings for its owner_. Subscribers can also opt into automatic
+ETH/ERC20 withdrawals that send funds only to the current owner. The vault signs only for sales at
+or above an owner-set floor and bids at or below an owner-set ceiling, and buys only within that
+ceiling and owner-set allowances. A compromised keeper can trade at those bounds and, when opted
+in, return funds to the owner.
 
 `ListoorVaultFactory` deploys vaults and registers them, so an owner gets a vault in one transaction
 and off-chain infrastructure resolves it on-chain instead of carrying an address per chain. Every
@@ -47,11 +48,13 @@ construction.
 - Residual risk: the keeper key can sell at the floor, or bid or buy at the ceiling until the
   allowances run out. **Floors are loss bounds, not live prices** — repricing below a floor needs an
   owner transaction.
-- Only the owner can withdraw assets; the keeper only spends through Seaport, within the bounds
-  above. The only operator ever approved is Seaport's conduit.
+- Only the owner can choose a withdrawal recipient. Subscribers can opt into keeper-triggered
+  ETH/ERC20 withdrawals to the current owner; NFTs remain owner-only. The only operator ever
+  approved is Seaport's conduit.
 - **Ownership moves in two steps**: `transferOwnership`, then `acceptOwnership` from the new wallet,
   and the vault's assets move with it. Moving a vault between your own wallets keeps the keeper and
-  every order live. When it changes hands, the new owner calls `setKeeper` for their own key, which
+  every order live, but clears the automatic-withdrawal opt-in. When it changes hands, the new owner
+  calls `setKeeper` for their own key, which
   also revokes every order the old keeper signed. `vaultOf(creator, salt)` remains a creation
   lookup. The factory's `ownedVaultOf(owner)` maps each wallet to its single current vault. Creating
   another or accepting another transfer from the same factory while already owning a vault reverts. After transferring
@@ -81,7 +84,7 @@ first consideration item pays anyone but the offerer, and only accepts its own t
 no room in a posted order for a protocol cut.
 
 Instead the factory doubles as a subscription registry. The keeper reads it for tier access, and
-the vault checks it before direct buys:
+the vault checks it before direct buys and automatic withdrawals:
 
 - Vaults are created with a **trial window** (`trialPeriod`, 30 days by default), so a fresh vault
   trades immediately.
@@ -96,9 +99,10 @@ the vault checks it before direct buys:
 - **A lapse returns the keeper to the free tier.** The keeper allows three configured listings and
   three configured offers per vault on each chain, and disables snipes. `isValidSignature` still
   verifies the keeper and every owner-set policy, so free-tier orders can be posted and filled.
-  `buy` reverts with `SubscriptionInactive` while lapsed. Withdrawals, cancels, `incrementCounter`
-  and every policy setter keep working, so a vault is never held hostage. Usage quotas restrict the
-  keeper service; owners can choose their own keeper and are not bound to its quotas.
+  `buy` and automatic withdrawals revert with `SubscriptionInactive` while lapsed. Owner withdrawals,
+  cancels, `incrementCounter` and policy setters keep working; enabling automatic withdrawals requires
+  a subscription, but disabling them is always available. Usage quotas restrict the keeper service;
+  owners can choose their own keeper and are not bound to its quotas.
 - **Paid time can only grow.** There is no code path that shortens `paidThrough`; raising the price or
   cutting the trial applies to future purchases only. Blocking a vault preserves its paid time but
   can suspend trading during that window; withdrawals remain available.
@@ -111,6 +115,25 @@ the vault checks it before direct buys:
 A per-fill cut is still possible on the **buy path** (`buy`), where the vault fulfills someone else's
 order and the transaction is ours to build rather than the orderbook's to validate. `buy` does not
 take one yet.
+
+## Automatic withdrawals
+
+Automatic withdrawals start disabled. A subscribed owner calls `setAutoWithdrawEnabled(true)` to
+let the keeper call `autoWithdrawETH(amount)` or `autoWithdrawERC20(token, amount)`. The owner may
+also call these methods. Both send only to `owner()`; neither accepts a recipient. The keeper submits
+each transaction and pays its gas. These methods do not run automatically on deposits or sale fills;
+the keeper service must watch balances and submit withdrawals. They return funds held by the vault,
+including deposits, so enabling them can reduce funds available for bids and buys.
+
+Every automatic withdrawal checks the current subscription. Trials and zero-price entitlement
+qualify under the existing `isSubscribed` rules. A lapse pauses execution without clearing the opt-in,
+so renewal resumes it. The owner may disable it even while lapsed or blocked. Accepting ownership
+from another wallet clears the opt-in; the new owner must enable it again. Trading blocks do not
+prevent returning funds to the owner, but the subscription requirement still applies.
+
+Manual `withdrawETH`, `withdrawERC20`, `withdrawERC721` and `withdrawERC1155` remain owner-only,
+allow owner-chosen recipients and require neither a subscription nor the opt-in. Existing immutable
+vaults need migration to a new factory version to gain automatic withdrawals.
 
 ## Vault blocklist
 

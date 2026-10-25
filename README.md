@@ -2,7 +2,8 @@
 
 Non-custodial Seaport trading accounts.
 Owners deposit assets and set trading limits; a keeper signs orders and buys within those limits.
-Only the owner can withdraw assets.
+Owners can always withdraw assets. Subscribers can opt into keeper-triggered ETH/ERC20 withdrawals
+that send funds only to the current owner.
 
 - EIP-1271 order validation with listing floors, offer ceilings and spending allowances.
 - Deterministic factory and vault deployment through CreateX.
