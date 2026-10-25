@@ -71,6 +71,122 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(address(vault).balance, PRICE);
     }
 
+    function test_keeperReturnsNativeSaleProceedsToSubscribedOwner() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.01 ether);
+        vm.prank(owner);
+        vault.setAutoWithdrawEnabled(true);
+        nft.mint(address(vault), TOKEN_ID);
+        Order memory order = _signed(_listing(PRICE));
+
+        vm.prank(taker);
+        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0)));
+        // The fixture owner forwards ETH on Base; verify the payment to it rather than its balance.
+        vm.expectCall(owner, PRICE, bytes(""));
+        vm.prank(keeper);
+        vault.autoWithdrawETH(PRICE);
+
+        assertEq(address(vault).balance, 0);
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+    }
+
+    function test_keeperReturnsRealWethSaleProceedsToSubscribedOwner() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.01 ether);
+        vm.prank(owner);
+        vault.setAutoWithdrawEnabled(true);
+        nft.mint(address(vault), TOKEN_ID);
+        OrderComponents memory components = _listing(PRICE);
+        components.consideration[0].itemType = ItemType.ERC20;
+        components.consideration[0].token = WETH;
+        Order memory order = _signed(components);
+        deal(WETH, taker, PRICE);
+        uint256 ownerBalance = IERC20(WETH).balanceOf(owner);
+
+        vm.startPrank(taker);
+        IERC20(WETH).approve(address(SEAPORT), PRICE);
+        assertTrue(SEAPORT.fulfillOrder(order, bytes32(0)));
+        vm.stopPrank();
+        vm.prank(keeper);
+        vault.autoWithdrawERC20(WETH, PRICE);
+
+        assertEq(IERC20(WETH).balanceOf(owner), ownerBalance + PRICE);
+        assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+    }
+
+    function test_automaticWithdrawalsPauseOnExpiryAndResumeAfterRenewal() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.01 ether);
+        vm.prank(owner);
+        vault.setAutoWithdrawEnabled(true);
+        vm.deal(address(vault), PRICE);
+        deal(WETH, address(vault), PRICE);
+        uint256 ownerWethBalance = IERC20(WETH).balanceOf(owner);
+        vm.warp(factory.paidThrough(address(vault)) + 1);
+
+        vm.startPrank(keeper);
+        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
+        vault.autoWithdrawETH(PRICE);
+        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
+        vault.autoWithdrawERC20(WETH, PRICE);
+        vm.stopPrank();
+        assertTrue(vault.autoWithdrawEnabled());
+
+        vm.prank(owner);
+        vault.renewSubscription(1, 0.01 ether);
+        vm.expectCall(owner, PRICE - 0.01 ether, bytes(""));
+        vm.startPrank(keeper);
+        vault.autoWithdrawETH(PRICE - 0.01 ether);
+        vault.autoWithdrawERC20(WETH, PRICE);
+        vm.stopPrank();
+
+        assertEq(IERC20(WETH).balanceOf(owner), ownerWethBalance + PRICE);
+        assertEq(address(vault).balance, 0);
+    }
+
+    function test_blockingPausesAutomaticWithdrawalsUntilUnblocked() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.01 ether);
+        vm.prank(owner);
+        vault.setAutoWithdrawEnabled(true);
+        vm.deal(address(vault), PRICE);
+        deal(WETH, address(vault), PRICE);
+        uint256 ownerWethBalance = IERC20(WETH).balanceOf(owner);
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), true);
+
+        vm.startPrank(keeper);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vault.autoWithdrawETH(PRICE);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vault.autoWithdrawERC20(WETH, PRICE);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        vault.renewSubscription(1, 0.01 ether);
+        assertTrue(factory.isSubscribed(address(vault)));
+        vm.startPrank(keeper);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vault.autoWithdrawETH(PRICE - 0.01 ether);
+        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        vault.autoWithdrawERC20(WETH, PRICE);
+        vm.stopPrank();
+        assertTrue(vault.autoWithdrawEnabled());
+
+        vm.prank(factoryOwner);
+        factory.setBlocked(address(vault), false);
+        vm.expectCall(owner, PRICE - 0.01 ether, bytes(""));
+        vm.startPrank(keeper);
+        vault.autoWithdrawETH(PRICE - 0.01 ether);
+        vault.autoWithdrawERC20(WETH, PRICE);
+        vm.stopPrank();
+
+        assertEq(address(vault).balance, 0);
+        assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
+        assertEq(IERC20(WETH).balanceOf(owner), ownerWethBalance + PRICE);
+    }
+
     /// @dev A dump listing is unfillable even though the keeper key signed it, and the vault's revert
     ///      reason surfaces through Seaport.
     function test_seaportRejectsListingBelowFloor() public {
