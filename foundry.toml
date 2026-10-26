@@ -10,6 +10,10 @@ solc = "0.8.28"
 evm_version = "cancun"
 optimizer = true
 optimizer_runs = 1_000_000
+fs_permissions = [
+    { access = "read", path = "./broadcast" },
+    { access = "read-write", path = "./deployments" },
+]
 # Maintained by hand so imports stay free of version numbers; versions are pinned
 # in [dependencies] and soldeer.lock.
 remappings = [

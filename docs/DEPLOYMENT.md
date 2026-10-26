@@ -61,6 +61,31 @@ FACTORY_SALT_SEED=listoor-vault-factory-e2e-1 \
   forge script script/DeployListoorVaultFactory.s.sol --rpc-url base --browser --broadcast
 ```
 
+## Deployment records
+
+After the deployment confirms, generate its public record with the same contract build and
+`FACTORY_SALT_SEED` used to deploy:
+
+```sh
+forge script --root . script/DeployListoorVaultFactory.s.sol --sig "record()" \
+  --rpc-url ethereum
+```
+
+This read-only RPC step needs no wallet. It reads the latest broadcast file, requires a successful
+receipt, compares its transaction input with this build, and checks the deployed factory's wiring and
+vault code store. Recent deployment block hashes are also checked against the chain. Recording runs
+separately because the deployment script executes before transactions
+are mined. Pending or failed transactions produce no record.
+
+Commit the resulting `deployments/<chain-id>/<factory-address>.json`. It includes the transaction,
+block, source commit, constructor addresses, salt seed and both code hashes. Runtime code hashes
+can be used for Listoor's `VAULT_FACTORY_CODEHASHES`; the vault code-store hash identifies the
+supported vault version. Records describe deployment-time values, including the initial owner.
+The ignored broadcast and cache directories remain local.
+
+For an earlier saved broadcast, use the `record(string)` entry point with its file path instead of
+`record()`. Keep that broadcast file's original contracts revision when recording.
+
 ## Post-deploy checklist, per chain
 
 Everything below is called on the vault by its owner.
