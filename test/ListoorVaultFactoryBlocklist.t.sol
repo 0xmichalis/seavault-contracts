@@ -16,9 +16,13 @@ contract ListoorVaultFactoryBlocklistTest is Test {
 
     function setUp() public {
         factory = new ListoorVaultFactory(makeAddr("seaport"), makeAddr("conduit"), factoryOwner);
-        stdstore.target(address(factory)).sig(factory.isVault.selector).with_key(vault)
+        stdstore.target(address(factory))
+            .sig(factory.isVault.selector)
+            .with_key(vault)
             .checked_write(true);
-        stdstore.target(address(factory)).sig(factory.isVault.selector).with_key(otherVault)
+        stdstore.target(address(factory))
+            .sig(factory.isVault.selector)
+            .with_key(otherVault)
             .checked_write(true);
     }
 
