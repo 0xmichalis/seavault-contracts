@@ -25,6 +25,12 @@ remappings = [
 [profile.default.fuzz]
 runs = 512
 
+[profile.default.invariant]
+runs = 128
+depth = 64
+fail_on_revert = true
+show_metrics = true
+
 [lint]
 # Deliberate deviations: ETH/WETH stay upper case, immutables exposed as getters keep getter names,
 # test fixtures build structs positionally, and hashing stays in Solidity rather than assembly.
