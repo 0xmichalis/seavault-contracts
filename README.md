@@ -32,6 +32,15 @@ Fork tests skip without `BASE_RPC_URL`. They exercise the actual Seaport, condui
 contracts. Dependency changes must update both `[dependencies]` and the manual remappings in
 `foundry.toml`.
 
+The adversarial suite in `test/ListoorVaultInvariant.fork.t.sol` runs stateful sequences against real
+Seaport, conduit and WETH deployments with test ERC721/ERC1155 collections. It checks portfolio value,
+asset conservation, spending caps and custody while a hostile keeper/taker trades, reenters during
+settlement and replays orders across policy changes, cancellation and keeper rotation. Every sequence
+ends by withdrawing the remaining assets as the owner, including blocked and lapsed states.
+The portfolio oracle assigns each NFT unit a fixed test value of 1 ETH; generated owner policies
+keep effective floors at least that value and ceilings at most that value. It does not model market
+prices or compromise of the external settlement contracts. Campaign settings live in `foundry.toml`.
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md): contracts, security model, deposits, discovery and signatures.
