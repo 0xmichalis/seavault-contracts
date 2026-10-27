@@ -1,4 +1,4 @@
-# listoor-contracts
+# seavault-contracts
 
 Non-custodial Seaport trading accounts.
 Owners deposit assets and set trading limits; a keeper signs orders and buys within those limits.
