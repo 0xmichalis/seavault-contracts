@@ -38,6 +38,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
 
     function setUp() public override {
         super.setUp();
+        // `makeAddr("owner")`, the fixture vault's owner, derives its address from this same key.
         (, ownerPk) = makeAddrAndKey("owner");
         vm.warp(1_793_552_419);
         deadline = block.timestamp + 10 minutes;

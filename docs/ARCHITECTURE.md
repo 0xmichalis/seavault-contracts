@@ -164,7 +164,8 @@ The owner never signs the sign-in message itself. They sign EIP-712 typed data
 `{name: "Seavault", version: "1", chainId, verifyingContract: vault}`, and the vault vouches for
 the message while `block.timestamp <= deadline` and that signature comes from the current `owner()`
 (an EOA or an EIP-1271 wallet). Approvals are bound to one vault, chain, message and deadline, and
-stop working once ownership changes. The keeper cannot sign in.
+only validate while their signer owns the vault, including again if it regains ownership before the
+deadline. The keeper cannot sign in.
 
 The vault writes the opening of the message itself: OpenSea's preamble
 `opensea.io wants you to sign in with your Ethereum account:` and its own EIP-55 address. An
