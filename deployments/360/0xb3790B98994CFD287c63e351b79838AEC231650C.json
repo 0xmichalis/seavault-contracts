@@ -1,0 +1,17 @@
+{
+  "blockHash": "0x78feb33fa841a98aeaf6143b51f311db8d3abe26e0c42c2b87ebdff05370b77f",
+  "blockNumber": 35902382,
+  "chainId": 360,
+  "conduit": "0x1E0049783F008A0085193E00003D00cd54003c71",
+  "createX": "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed",
+  "deployer": "0xd2Be832911A252302bAc09e30Fc124A405E142DF",
+  "factory": "0xb3790B98994CFD287c63e351b79838AEC231650C",
+  "factoryRuntimeCodeHash": "0x3b2553f43f240a9592d634b48e827d32f860dd54f96e5992af3ada5a56336d43",
+  "initialOwner": "0xd2Be832911A252302bAc09e30Fc124A405E142DF",
+  "saltSeed": "listoor-vault-factory-v2",
+  "seaport": "0x0000000000000068F116a894984e2DB1123eB395",
+  "sourceCommit": "551f8e7",
+  "transactionHash": "0x76c81f67e399bfbfe9db14f3250cb3ab2db5d3eeb14394f6e4b8ad90b80986c7",
+  "vaultCodeStore": "0x55378d454494DDAdA436dD2dF2522D0a2c6148DD",
+  "vaultCodeStoreHash": "0xcee3ce44c3302b528c4fe26a842336d16ad67e7143eadfd9d3546c3193078b3b"
+}
