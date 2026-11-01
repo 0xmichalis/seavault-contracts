@@ -8,6 +8,7 @@ withdrawals that send funds only to the current owner.
 - EIP-1271 order validation with listing floors, offer ceilings and spending allowances.
 - Deterministic factory and vault deployment through CreateX.
 - Automatic account discovery, two-step ownership transfers and subscriptions.
+- Owner-approved OpenSea sign-in as the vault.
 - First ETH deposit and account creation in one transaction.
 
 ## Development

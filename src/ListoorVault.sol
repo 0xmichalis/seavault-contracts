@@ -9,7 +9,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ConsiderationInterface} from "seaport-types/src/interfaces/ConsiderationInterface.sol";
@@ -61,9 +64,25 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     ///         for native ETH in the payment-token allowlist.
     address public constant NATIVE_TOKEN = address(0);
 
+    /// @notice First word of an OpenSea login signature, `keccak256("Seavault.OpenSeaLogin")`.
+    bytes32 public constant OPENSEA_LOGIN_TAG = keccak256("Seavault.OpenSeaLogin");
+
+    /// @notice What the owner signs to approve an OpenSea login: EIP-712 `OpenSeaLogin` under the
+    ///         domain `{name: "Seavault", version: "1", chainId, verifyingContract: vault}`.
+    bytes32 public constant OPENSEA_LOGIN_TYPEHASH =
+        keccak256("OpenSeaLogin(string message,uint256 deadline)");
+
     uint256 private constant BPS_DENOMINATOR = 10_000;
     uint256 private constant DEFAULT_MAX_FEE_BPS = 1000;
     uint256 private constant DEFAULT_MAX_ORDER_DURATION = 30 days;
+
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH = keccak256(
+        "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+    );
+    bytes32 private constant LOGIN_DOMAIN_NAME_HASH = keccak256("Seavault");
+    bytes32 private constant LOGIN_DOMAIN_VERSION_HASH = keccak256("1");
+    bytes private constant OPENSEA_LOGIN_PREFIX =
+        "opensea.io wants you to sign in with your Ethereum account:\n";
 
     /// @notice Seaport deployment whose orders this vault signs for.
     ConsiderationInterface public immutable seaport;
@@ -146,6 +165,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error NotOwnerOrKeeper(address caller);
     error InvalidFeeBps(uint256 feeBps);
     error OwnershipCannotBeRenounced();
+    error OpenSeaLoginExpired(uint256 deadline);
 
     modifier onlyOwnerOrKeeper() {
         _checkOwnerOrKeeper();
@@ -191,12 +211,16 @@ contract ListoorVault is Ownable2Step, IERC1271 {
                             ORDER VALIDATION
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Validates a Seaport order signed by the keeper key against owner-set policy, or the
-    ///         keeper's sign-off on cancelling an order through OpenSea without gas.
-    /// @param digest EIP-712 digest Seaport derived for the order it is about to fulfill, or the
-    ///        `cancellationDigest` OpenSea checks before cancelling an order offchain.
+    /// @notice Validates a Seaport order signed by the keeper key against owner-set policy, the
+    ///         keeper's sign-off on cancelling an order through OpenSea without gas, or the owner's
+    ///         approval of an OpenSea sign-in as the vault.
+    /// @param digest EIP-712 digest Seaport derived for the order it is about to fulfill, the
+    ///        `cancellationDigest` OpenSea checks before cancelling an order offchain, or the
+    ///        EIP-191 hash of an OpenSea sign-in message.
     /// @param signature `abi.encode(OrderComponents, bytes)`: the order behind `digest` and the keeper
-    ///        key's ECDSA signature over it. For a cancellation, `abi.encode(orderHash, bytes)`.
+    ///        key's ECDSA signature over it. For a cancellation, `abi.encode(orderHash, bytes)`. For
+    ///        a sign-in, `abi.encode(OPENSEA_LOGIN_TAG, messageBody, deadline, ownerSignature)`, where
+    ///        `messageBody` is the sign-in message minus its first two lines and their newlines.
     /// @dev Reverts rather than returning a non-magic value, so failures surface with a reason.
     ///      Orders must be signed one at a time: Seaport hands contract signers the single-order
     ///      digest, so a keeper signature over a bulk-order root never verifies. The encoding is
@@ -205,6 +229,10 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     ///      A cancellation digest hashes an `OrderHash` struct, never an order, so vouching for one
     ///      approves that cancellation and nothing Seaport could fill. That is why it skips policy
     ///      and keeps working through a lapse, like every other way out.
+    ///
+    ///      A sign-in digest is re-derived from the message, which is an EIP-191 hash and never an
+    ///      EIP-712 order or cancellation digest. It needs the owner, not the keeper, so it works
+    ///      through a lapse or block like other owner actions.
     function isValidSignature(bytes32 digest, bytes calldata signature)
         external
         view
@@ -221,6 +249,13 @@ contract ListoorVault is Ownable2Step, IERC1271 {
             if (ECDSA.recover(digest, cancellationSignature) != keeper) {
                 revert UnauthorizedSigner();
             }
+            return IERC1271.isValidSignature.selector;
+        }
+
+        if (signature.length >= 32 && bytes32(signature[:32]) == OPENSEA_LOGIN_TAG) {
+            (, bytes memory messageBody, uint256 deadline, bytes memory ownerSignature) =
+                abi.decode(signature, (bytes32, bytes, uint256, bytes));
+            _validateOpenSeaLogin(digest, messageBody, deadline, ownerSignature);
             return IERC1271.isValidSignature.selector;
         }
 
@@ -643,6 +678,44 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
     function _isPaymentItem(ItemType itemType) private pure returns (bool) {
         return itemType == ItemType.NATIVE || itemType == ItemType.ERC20;
+    }
+
+    /// @dev Only OpenSea sign-ins as this vault qualify: the vault itself opens the message with
+    ///      OpenSea's Sign-In with Ethereum preamble and its own EIP-55 address, which keeps the
+    ///      owner's approval from turning the vault into a signer of arbitrary messages. OpenSea
+    ///      checks the remaining fields, including its single-use nonce. The owner signs the full
+    ///      message as typed data bound to this vault and chain, never as a sign-in naming the vault.
+    function _validateOpenSeaLogin(
+        bytes32 digest,
+        bytes memory messageBody,
+        uint256 deadline,
+        bytes memory ownerSignature
+    ) private view {
+        bytes memory message = bytes.concat(
+            OPENSEA_LOGIN_PREFIX,
+            bytes(Strings.toChecksumHexString(address(this))),
+            "\n",
+            messageBody
+        );
+        if (MessageHashUtils.toEthSignedMessageHash(message) != digest) revert DigestMismatch();
+        if (block.timestamp > deadline) revert OpenSeaLoginExpired(deadline);
+
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                LOGIN_DOMAIN_NAME_HASH,
+                LOGIN_DOMAIN_VERSION_HASH,
+                block.chainid,
+                address(this)
+            )
+        );
+        bytes32 approval = MessageHashUtils.toTypedDataHash(
+            domainSeparator,
+            keccak256(abi.encode(OPENSEA_LOGIN_TYPEHASH, keccak256(message), deadline))
+        );
+        if (!SignatureChecker.isValidSignatureNow(owner(), approval, ownerSignature)) {
+            revert UnauthorizedSigner();
+        }
     }
 
     function _checkOwnerOrKeeper() private view {

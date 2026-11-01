@@ -9,7 +9,9 @@ solc = "0.8.28"
 # zora, shape) executes Cancun opcodes — verified by eth_call'ing MCOPY on each.
 evm_version = "cancun"
 optimizer = true
-optimizer_runs = 1_000_000
+# Low enough for the vault's creation code to fit its factory code store (24,575 bytes); higher
+# settings push it past that cap.
+optimizer_runs = 10_000
 fs_permissions = [
     { access = "read", path = "./broadcast" },
     { access = "read-write", path = "./deployments" },
