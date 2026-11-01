@@ -153,6 +153,32 @@ invalidate orders Seaport already validated or partially filled; cancel those or
 the counter. Older immutable vaults do not acquire this
 gate through a factory or keeper update and need migration to enforce it onchain.
 
+## OpenSea sign-in
+
+The owner can sign in to opensea.io as the vault, for example to set up notification emails for the
+vault's offers and sales. OpenSea signs wallets in with Sign-In with Ethereum and verifies contract
+accounts through EIP-1271 on chain 1, so signing in needs the vault deployed on Ethereum.
+
+The owner never signs the sign-in message itself. They sign EIP-712 typed data
+`OpenSeaLogin(string message, uint256 deadline)` under the domain
+`{name: "Seavault", version: "1", chainId, verifyingContract: vault}`, and the vault vouches for
+the message while `block.timestamp <= deadline` and that signature comes from the current `owner()`
+(an EOA or an EIP-1271 wallet). Approvals are bound to one vault, chain, message and deadline, and
+only validate while their signer owns the vault, including again if it regains ownership before the
+deadline. The keeper cannot sign in.
+
+The vault writes the opening of the message itself: OpenSea's preamble
+`opensea.io wants you to sign in with your Ethereum account:` and its own EIP-55 address. An
+approval therefore only ever signs the vault in to OpenSea, never an arbitrary message. OpenSea
+validates the rest, including its single-use nonce and issue time. The sign-in digest is an
+EIP-191 hash, so it can never approve a Seaport order or cancellation, and an order signature can
+never approve a sign-in, even when the owner and keeper share a key. Like other owner actions, it
+works while the vault is lapsed or blocked.
+
+A sign-in leaves an OpenSea session that OpenSea alone expires or revokes; changing the vault's
+owner does not end sessions that already exist. Older immutable vaults cannot sign in and need
+migration.
+
 ## Layout
 
     src/ListoorVault.sol                     the vault
@@ -185,6 +211,12 @@ bulk-order root never verifies.
 For a gasless cancel, the keeper signs OpenSea's `OrderHash` message instead and sends
 `abi.encode(orderHash, ecdsaSignature)` as the `offererSignature`. `cancellationDigest(orderHash)`
 on the vault returns what it has to sign.
+
+For an OpenSea sign-in, the wallet answering OpenSea's `personal_sign` request returns
+`abi.encode(OPENSEA_LOGIN_TAG, messageBody, deadline, ownerSignature)`, where `messageBody` is the
+message minus its first two lines (the preamble and the address) and the newline after each, and
+`ownerSignature` is the owner's signature over the `OpenSeaLogin` typed data for the full message. Calling
+`isValidSignature` with the message's EIP-191 hash checks the result before it is handed back.
 
 Two things about how the orderbook API treats these signatures, established by probing it directly:
 

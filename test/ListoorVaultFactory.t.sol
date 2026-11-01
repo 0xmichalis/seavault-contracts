@@ -17,4 +17,10 @@ contract ListoorVaultFactoryTest is Test {
         assertEq(CodeStore.read(factory.vaultCodeStore()), type(ListoorVault).creationCode);
         assertLt(address(factory).code.length, type(ListoorVault).creationCode.length);
     }
+
+    /// @dev The store is a contract like any other: EIP-170 caps it at 24,576 bytes of runtime code,
+    ///      one of which is its leading STOP byte.
+    function test_vaultCreationCodeFitsTheCodeStore() public pure {
+        assertLe(type(ListoorVault).creationCode.length, 24_575);
+    }
 }
