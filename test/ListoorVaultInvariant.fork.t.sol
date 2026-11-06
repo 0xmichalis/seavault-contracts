@@ -83,6 +83,19 @@ contract ListoorVaultInvariantForkTest is BaseFork {
         _assertAll();
     }
 
+    /// @dev The lead-time bound is measured when Seaport asks: a listing posted one second past it
+    ///      is refused now and accepted two hours later, when it starts within the bound again.
+    function test_ordersStartingTooFarAheadCannotBeValidatedUntilTheyAreWithinBound() public {
+        uint256 sleeper = handler.postOrder(false, true, 0, UNIT, 8);
+        assertFalse(handler.validateOrder(sleeper));
+        assertFalse(handler.fulfillOrder(sleeper, 0));
+        handler.advanceTime(2 hours);
+        assertTrue(handler.validateOrder(sleeper));
+        assertFalse(handler.fulfillOrder(sleeper, 0));
+        assertEq(handler.successfulValidations(), 2);
+        _assertAll();
+    }
+
     function test_decliningEditionQuantityCannotOverpay() public {
         uint256 index = handler.postOrder(true, false, 3, UNIT / 2, 5);
         bool validated = handler.validateOrder(index);

@@ -91,6 +91,8 @@ For an earlier saved broadcast, use the `record(string)` entry point with its fi
 Everything below is called on the vault by its owner.
 
 1. `setPaymentTokenAllowed(address(0), true)` for native ETH and `setPaymentTokenAllowed(WETH, true)`.
+   Allow nothing else: floors and ceilings are denominated in whichever allowed token an order
+   uses, so every allowed token has to be worth the same.
 2. `setListingFloor(collection, floorPerUnit)`, plus `setTokenListingFloor` where a token needs its
    own bound. A collection with no floor cannot be listed at all.
 3. `setOfferCeiling(collection, ceilingPerUnit)` for collections the keeper may bid on or buy from.
@@ -102,8 +104,10 @@ Everything below is called on the vault by its owner.
 6. `setNativeBuyAllowance(amount)` if the vault will buy listings priced in ETH. Keep it finite too:
    it caps what buys spend in ETH. Each buy draws it down, so top it up as needed.
 7. Adjust `setMaxOrderDuration` (default 30 days) and `setMaxFeeBps` (default 1000 = 10%) if the
-   defaults do not fit the marketplace's fee structure. The keeper should read `maxFeeBps` before
-   posting: a listing whose marketplace fee plus creator earnings exceed it fails validation.
+   defaults do not fit the marketplace's fee structure. The duration caps both how long an order
+   may run and how far ahead it may start, so an order Seaport has validated never carries old
+   policy for more than twice it. The keeper should read `maxFeeBps` before posting: a listing
+   whose marketplace fee plus creator earnings exceed it fails validation.
 8. Move the NFTs, the WETH and the ETH buys spend in, then point the keeper at the vault and watch it
    in dry-run mode before letting it post orders.
 9. To retain full keeper access after the trial, `extendSubscription` from any wallet or

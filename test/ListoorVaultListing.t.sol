@@ -246,6 +246,40 @@ contract ListoorVaultListingTest is VaultTest {
         assertEq(validate(order), MAGIC_VALUE);
     }
 
+    /// @dev Seaport validates an order whatever its start time, so a far-future start would carry
+    ///      today's policy indefinitely.
+    function test_rejectsStartFurtherAheadThanMaxDuration() public {
+        uint256 latestStart = block.timestamp + vault.maxOrderDuration();
+        OrderComponents memory order = listing(FLOOR);
+        order.startTime = latestStart + 1;
+        order.endTime = order.startTime + 1 hours;
+
+        expectRevertOn(
+            abi.encodeWithSelector(
+                ListoorVault.OrderStartsTooLate.selector, latestStart, order.startTime
+            ),
+            order
+        );
+    }
+
+    function test_acceptsStartAtMaxDurationAhead() public view {
+        OrderComponents memory order = listing(FLOOR);
+        order.startTime = block.timestamp + vault.maxOrderDuration();
+        order.endTime = order.startTime + vault.maxOrderDuration();
+
+        assertEq(validate(order), MAGIC_VALUE);
+    }
+
+    function test_unboundedDurationAcceptsAnyStart() public {
+        vm.prank(owner);
+        vault.setMaxOrderDuration(type(uint256).max);
+        OrderComponents memory order = listing(FLOOR);
+        order.startTime = type(uint256).max - 1;
+        order.endTime = type(uint256).max;
+
+        assertEq(validate(order), MAGIC_VALUE);
+    }
+
     function test_rejectsEmptyTimeRange() public {
         OrderComponents memory order = listing(FLOOR);
         order.endTime = order.startTime;
