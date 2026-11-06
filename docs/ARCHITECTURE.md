@@ -29,7 +29,8 @@ construction.
   can validate a posted order with its signature, and collection offers with a quantity fill
   partially as a matter of course. Policy changes and blocklist changes do not reach those orders.
   Their reach is bounded, though: an order may neither span nor start more than `maxOrderDuration`
-  ahead of the moment the vault vouches for it, so none of them outlives twice that.
+  ahead of the moment the vault vouches for it, so none of them outlives twice the value in force
+  at that moment. Lowering `maxOrderDuration` later reaches only orders not yet vouched for.
 - `setKeeper` bumps the vault's Seaport counter, so it revokes every outstanding order at once,
   validated or not. `incrementCounter` (owner) does the same without rotating, and `cancelOrders`
   (owner or keeper) retracts single orders. Cancel or bump after tightening policy if live orders

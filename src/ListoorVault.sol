@@ -50,8 +50,9 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///
 ///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
 ///      on-chain, which anyone can do with its signature, or partially filled. Policy changes reach
-///      those orders only through a cancel or a counter bump, but none of them outlives twice
-///      `maxOrderDuration`: an order may neither span nor start further ahead than that.
+///      those orders only through a cancel or a counter bump, but none of them outlives twice the
+///      `maxOrderDuration` in force when the vault vouched: an order may neither span nor start
+///      further ahead than that, and lowering it later reaches only orders not yet vouched for.
 ///
 ///      The keeper enforces free-tier listing and offer limits offchain. Direct buys and automatic
 ///      withdrawals require an active subscription, checked against `subscriptions`. A lapse leaves

@@ -94,7 +94,8 @@ Everything below is called on the vault by its owner.
    Allow nothing else: floors and ceilings are denominated in whichever allowed token an order
    uses, so every allowed token has to be worth the same.
 2. `setListingFloor(collection, floorPerUnit)`, plus `setTokenListingFloor` where a token needs its
-   own bound. A collection with no floor cannot be listed at all.
+   own bound. A collection with no floor cannot be listed at all, except for tokens given a floor
+   of their own.
 3. `setOfferCeiling(collection, ceilingPerUnit)` for collections the keeper may bid on or buy from.
    Listings in that collection then have to clear the ceiling as well as the floor.
 4. `setConduitApprovalForAll(collection, true)` for every collection the vault sells from.
@@ -106,8 +107,9 @@ Everything below is called on the vault by its owner.
 7. Adjust `setMaxOrderDuration` (default 30 days) and `setMaxFeeBps` (default 1000 = 10%) if the
    defaults do not fit the marketplace's fee structure. The duration caps both how long an order
    may run and how far ahead it may start, so an order Seaport has validated never carries old
-   policy for more than twice it. The keeper should read `maxFeeBps` before posting: a listing
-   whose marketplace fee plus creator earnings exceed it fails validation.
+   policy for more than twice the duration it was validated under; lowering it later does not
+   shorten those orders. The keeper should read `maxFeeBps` before posting: a listing whose
+   marketplace fee plus creator earnings exceed it fails validation.
 8. Move the NFTs, the WETH and the ETH buys spend in, then point the keeper at the vault and watch it
    in dry-run mode before letting it post orders.
 9. To retain full keeper access after the trial, `extendSubscription` from any wallet or
