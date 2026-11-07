@@ -170,8 +170,9 @@ contract VaultInvariantHandler is Test {
     }
 
     /// @dev Attack modes: wrong signer, redirected proceeds/NFTs, tampered signed components,
-    ///      excessive fees, declining/rising quantities, and ordinary fees. Bit 4 selects WETH
-    ///      listings; bit 5 selects collection criteria on bids; bits 6/7 vary payment amounts.
+    ///      excessive fees, declining/rising quantities, and ordinary fees. Bit 3 starts the order
+    ///      further ahead than allowed; bit 4 selects WETH listings; bit 5 selects collection
+    ///      criteria on bids; bits 6/7 vary payment amounts.
     function postOrder(
         bool bid,
         bool erc721,
@@ -205,6 +206,10 @@ contract VaultInvariantHandler is Test {
             if (bid) components.offer[0].endAmount = endPrice;
             else components.consideration[0].endAmount = endPrice;
         }
+        if (attackSeed & 8 != 0) {
+            components.startTime = block.timestamp + vault.maxOrderDuration() + 1;
+            components.endTime = components.startTime + 1 hours;
+        }
         if (mode == 4 || mode == 7) {
             ConsiderationItem[] memory withFee = new ConsiderationItem[](2);
             withFee[0] = components.consideration[0];
@@ -237,7 +242,7 @@ contract VaultInvariantHandler is Test {
             address(taker), address(seaport), abi.encodeCall(seaport.validate, (toValidate)), 0
         );
         if (success) {
-            _assertLive(posted);
+            _assertLive(posted, toValidate[0].parameters.startTime);
             ++successfulValidations;
         }
     }
@@ -283,7 +288,7 @@ contract VaultInvariantHandler is Test {
             value
         );
         if (success) {
-            _assertLive(posted);
+            _assertLive(posted, order.parameters.startTime);
             uint256 afterWeth = IERC20(WETH).balanceOf(address(vault));
             if (afterWeth < beforeWeth) expectedWethAllowance -= beforeWeth - afterWeth;
             ++successfulFills;
@@ -712,10 +717,17 @@ contract VaultInvariantHandler is Test {
         return Fulfillment(offered, received);
     }
 
-    function _assertLive(PostedOrder storage posted) private view {
+    /// @dev The start bound is relative to the moment Seaport asks, so an order posted too far
+    ///      ahead becomes acceptable once enough time has passed.
+    function _assertLive(PostedOrder storage posted, uint256 startTime) private view {
         assertTrue(posted.authentic, "forged or tampered order accepted");
         assertFalse(posted.cancelled, "cancelled order accepted");
         assertEq(posted.generation, generation, "revoked order accepted");
+        assertLe(
+            startTime,
+            block.timestamp + vault.maxOrderDuration(),
+            "order starting too far ahead accepted"
+        );
     }
 
     function _key(uint256 index) private pure returns (uint256) {

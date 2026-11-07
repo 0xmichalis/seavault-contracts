@@ -248,6 +248,44 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(nft.ownerOf(TOKEN_ID), taker);
     }
 
+    /// @dev Seaport validates an order whatever its start time, so without the start bound a
+    ///      far-future listing would carry today's floor for as long as the keeper likes.
+    function test_seaportCannotValidateListingStartingTooFarAhead() public {
+        nft.mint(address(vault), TOKEN_ID);
+        uint256 latestStart = block.timestamp + vault.maxOrderDuration();
+        OrderComponents memory components = _listing(PRICE);
+        components.startTime = latestStart + 1;
+        components.endTime = components.startTime + 1 hours;
+        Order[] memory orders = new Order[](1);
+        orders[0] = _signed(components);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ListoorVault.OrderStartsTooLate.selector, latestStart, components.startTime
+            )
+        );
+        SEAPORT.validate(orders);
+    }
+
+    /// @dev What remains: a listing starting as far ahead as allowed, validated today, fills under
+    ///      today's floor until it expires, which is twice `maxOrderDuration` from now at most.
+    function test_validatedListingStartingAtTheLatestFillsUnderTheOldFloor() public {
+        nft.mint(address(vault), TOKEN_ID);
+        OrderComponents memory components = _listing(PRICE);
+        components.startTime = block.timestamp + vault.maxOrderDuration();
+        components.endTime = components.startTime + vault.maxOrderDuration();
+        Order[] memory orders = new Order[](1);
+        orders[0] = _signed(components);
+        SEAPORT.validate(orders);
+        vm.prank(owner);
+        vault.setListingFloor(address(nft), 10 * PRICE);
+
+        vm.warp(components.endTime - 1);
+        vm.prank(taker);
+        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0)));
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+    }
+
     function test_blockedKeeperCanCancelValidatedListing() public {
         nft.mint(address(vault), TOKEN_ID);
         OrderComponents[] memory components = new OrderComponents[](1);

@@ -50,7 +50,9 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///
 ///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
 ///      on-chain, which anyone can do with its signature, or partially filled. Policy changes reach
-///      those orders only through a cancel or a counter bump.
+///      those orders only through a cancel or a counter bump, but none of them outlives twice the
+///      `maxOrderDuration` in force when the vault vouched: an order may neither span nor start
+///      further ahead than that, and lowering it later reaches only orders not yet vouched for.
 ///
 ///      The keeper enforces free-tier listing and offer limits offchain. Direct buys and automatic
 ///      withdrawals require an active subscription, checked against `subscriptions`. A lapse leaves
@@ -98,7 +100,8 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice Hot key authorized to sign orders on the vault's behalf.
     address public keeper;
 
-    /// @notice Longest `endTime - startTime` an order may span.
+    /// @notice Longest `endTime - startTime` an order may span, and the furthest ahead of now an
+    ///         order may start.
     uint256 public maxOrderDuration;
 
     /// @notice Largest share of a sale, in basis points, that may be routed to non-vault recipients.
@@ -107,7 +110,8 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice Tokens accepted as payment, keyed by address (`NATIVE_TOKEN` for the native asset).
     mapping(address token => bool allowed) public paymentTokenAllowed;
 
-    /// @notice Minimum proceeds per unit sold, per collection. Zero makes a collection unlistable.
+    /// @notice Minimum proceeds per unit sold, per collection. Zero makes a collection unlistable,
+    ///         except for tokens with a floor of their own.
     mapping(address collection => uint256 floorPerUnit) public listingFloor;
 
     /// @notice Per-token override of `listingFloor`. Zero falls back to the collection floor.
@@ -145,6 +149,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error InvalidOfferer();
     error InvalidTimeRange();
     error OrderDurationTooLong(uint256 maxOrderDuration, uint256 duration);
+    error OrderStartsTooLate(uint256 latestStartTime, uint256 startTime);
     error EmptyOffer();
     error UnsupportedOfferItem(ItemType itemType);
     error UnsupportedConsiderationItem(ItemType itemType);
@@ -328,6 +333,9 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         emit OfferCeilingUpdated(collection, ceilingPerUnit);
     }
 
+    /// @notice Allows or revokes a token as payment.
+    /// @dev Floors and ceilings are denominated in whichever allowed token an order uses, so allow
+    ///      only assets of the same value: the native asset and its wrapper.
     function setPaymentTokenAllowed(address token, bool allowed) external onlyOwner {
         paymentTokenAllowed[token] = allowed;
         emit PaymentTokenUpdated(token, allowed);
@@ -574,6 +582,14 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
         uint256 duration = order.endTime - order.startTime;
         if (duration > maxOrderDuration) revert OrderDurationTooLong(maxOrderDuration, duration);
+        // Seaport validates an order whatever its start time, so one starting far ahead would carry
+        // today's policy for as long as the keeper likes.
+        if (
+            order.startTime > block.timestamp
+                && order.startTime - block.timestamp > maxOrderDuration
+        ) {
+            revert OrderStartsTooLate(block.timestamp + maxOrderDuration, order.startTime);
+        }
         if (order.offer.length == 0) revert EmptyOffer();
 
         // What the vault offers decides which side of the book this is: NFTs out is a listing,
