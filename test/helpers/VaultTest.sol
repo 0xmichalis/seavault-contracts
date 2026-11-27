@@ -9,11 +9,12 @@ import {
     OrderComponents
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ListoorVault} from "../../src/ListoorVault.sol";
+import {Seavault} from "../../src/Seavault.sol";
 import {SeaportOrderHash} from "../../src/libraries/SeaportOrderHash.sol";
 import {MockSeaport} from "../mocks/MockSeaport.sol";
 import {MockSubscriptionRegistry} from "../mocks/MockSubscriptionRegistry.sol";
 import {MockERC1155, MockERC721, MockWETH} from "../mocks/TokenMocks.sol";
+import {PolicyFixture} from "./PolicyFixture.sol";
 
 /// @notice Vault under a mocked Seaport, with builders for the order shapes OpenSea posts.
 /// @dev The subscription starts active, so suites that are not about it are unaffected; the
@@ -25,7 +26,7 @@ abstract contract VaultTest is Test {
     uint256 internal constant TOKEN_ID = 42;
     uint256 internal constant EDITION_ID = 7;
 
-    ListoorVault internal vault;
+    Seavault internal vault;
     MockSeaport internal seaport;
     MockSubscriptionRegistry internal subscriptions;
     MockERC721 internal nft;
@@ -39,6 +40,8 @@ abstract contract VaultTest is Test {
     address internal stranger = makeAddr("stranger");
     address internal keeper;
     uint256 internal keeperPk;
+    PolicyFixture.Rule internal nftPolicy;
+    PolicyFixture.Rule internal editionPolicy;
 
     function setUp() public virtual {
         (keeper, keeperPk) = makeAddrAndKey("keeper");
@@ -47,16 +50,35 @@ abstract contract VaultTest is Test {
         nft = new MockERC721();
         edition = new MockERC1155();
         weth = new MockWETH();
-        vault = new ListoorVault(address(seaport), conduit, owner, keeper, address(subscriptions));
+        vault = new Seavault(address(seaport), conduit, owner, keeper, address(subscriptions));
+        nftPolicy = PolicyFixture.Rule(address(nft), FLOOR, CEILING);
+        editionPolicy = PolicyFixture.Rule(address(edition), FLOOR, CEILING);
 
         vm.startPrank(owner);
         vault.setPaymentTokenAllowed(vault.NATIVE_TOKEN(), true);
         vault.setPaymentTokenAllowed(address(weth), true);
-        vault.setListingFloor(address(nft), FLOOR);
-        vault.setListingFloor(address(edition), FLOOR);
-        vault.setOfferCeiling(address(nft), CEILING);
-        vault.setOfferCeiling(address(edition), CEILING);
+        vault.setPolicyRoot(bytes32(0), collectionPolicyRoot());
         vm.stopPrank();
+    }
+
+    function collectionPolicyRoot() internal view returns (bytes32) {
+        return PolicyFixture.root(nftPolicy, editionPolicy);
+    }
+
+    function setNftPolicy(uint256 floor, uint256 ceiling) internal {
+        nftPolicy.floor = floor;
+        nftPolicy.ceiling = ceiling;
+        bytes32 previous = vault.policyRoot();
+        vm.prank(owner);
+        vault.setPolicyRoot(previous, collectionPolicyRoot());
+    }
+
+    function policyWitnesses(OrderComponents memory order)
+        internal
+        view
+        returns (Seavault.CollectionWitness[] memory)
+    {
+        return PolicyFixture.forOrder(nftPolicy, editionPolicy, order);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -208,13 +230,13 @@ abstract contract VaultTest is Test {
         return vault.isValidSignature(digestOf(order), payloadFor(order, signerPk));
     }
 
-    /// @dev The signature blob a keeper hands to OpenSea: order components plus an ECDSA signature.
+    /// @dev The keeper publishes the order components, signature and collection witnesses together.
     function payloadFor(OrderComponents memory order, uint256 signerPk)
         internal
         view
         returns (bytes memory)
     {
-        return abi.encode(order, signatureFor(order, signerPk));
+        return abi.encode(order, signatureFor(order, signerPk), policyWitnesses(order));
     }
 
     function signatureFor(OrderComponents memory order, uint256 signerPk)

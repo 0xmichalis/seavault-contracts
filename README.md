@@ -2,7 +2,7 @@
 
 Non-custodial Seaport trading accounts.
 Owners deposit assets and set trading limits; a keeper signs orders and buys within those limits.
-Owners can always withdraw assets. Unblocked subscribers can opt into keeper-triggered ETH/ERC20
+Owners can always withdraw assets. They can opt into keeper-triggered ETH/ERC20
 withdrawals that send funds only to the current owner.
 
 - EIP-1271 order validation with listing floors, offer ceilings and spending allowances.
@@ -33,7 +33,7 @@ Fork tests skip without `BASE_RPC_URL`. They exercise the actual Seaport, condui
 contracts. Dependency changes must update both `[dependencies]` and the manual remappings in
 `foundry.toml`.
 
-The adversarial suite in `test/ListoorVaultInvariant.fork.t.sol` runs stateful sequences against real
+The adversarial suite in `test/SeavaultInvariant.fork.t.sol` runs stateful sequences against real
 Seaport, conduit and WETH deployments with test ERC721/ERC1155 collections. It checks portfolio value,
 asset conservation, spending caps and custody while a hostile keeper/taker trades, reenters during
 settlement and replays orders across policy changes, cancellation and keeper rotation. Every sequence
@@ -47,10 +47,9 @@ prices or compromise of the external settlement contracts. Campaign settings liv
 - [Architecture](docs/ARCHITECTURE.md): contracts, security model, deposits, discovery and signatures.
 - [Deployment](docs/DEPLOYMENT.md): prediction, deployment and account configuration.
 
-Keeper limits bound what a compromised key can trade. Tightening policy cannot revoke orders
-Seaport already validated, though none outlives twice the `maxOrderDuration` it was validated
-under; cancel those orders or increment the counter. Free-tier listing and offer quotas are
-enforced by the keeper; direct buys require an active subscription.
-The factory owner can block order validation, direct buys and automatic withdrawals for individual
-vaults, including paid ones. Manual owner withdrawals and cancellations remain available.
+Keeper limits bound what a compromised key can trade. Replacing the collection policy root also
+retires outstanding orders through Seaport's counter. To apply other policy changes to already
+validated or partially filled orders, cancel them or increment the counter. The keeper enforces
+free-tier listing and offer quotas and reserves managed direct buys for active subscribers.
+The factory owner can suspend managed keeper service for individual vaults.
 See the architecture document for the full security model.

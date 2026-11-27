@@ -3,12 +3,11 @@ pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
 import {BaseFork} from "./helpers/BaseFork.sol";
 import {VaultInvariantHandler} from "./helpers/VaultInvariantHandler.sol";
 
 /// @notice Stateful asset-safety properties under real Seaport, conduit and WETH settlement.
-contract ListoorVaultInvariantForkTest is BaseFork {
+contract SeavaultInvariantForkTest is BaseFork {
     VaultInvariantHandler internal handler;
     uint256 private constant UNIT = 1 ether;
 
@@ -53,32 +52,23 @@ contract ListoorVaultInvariantForkTest is BaseFork {
         handler.exitToOwner();
     }
 
-    function test_partialOfferSurvivesPolicyTighteningButNotKeeperRotation() public {
+    function test_partialOfferRevokedByRootChange() public {
         uint256 index = handler.postOrder(true, false, 3, UNIT / 2, 0);
         assertTrue(handler.fulfillOrder(index, 2)); // two of eight units
-        ListoorVault vault = handler.vault();
-        address collection = address(handler.edition());
-        vm.prank(vault.owner());
-        vault.setOfferCeiling(collection, 0);
+        handler.configurePolicy(0); // Set the ceilings to zero.
         handler.setAccess(true, false);
-        assertTrue(handler.fulfillOrder(index, 2)); // cached policy permits another two units
-        handler.revokeOrders(1);
-        assertFalse(handler.fulfillOrder(index, 0));
-        assertEq(handler.successfulFills(), 2);
+        assertFalse(handler.fulfillOrder(index, 2));
+        assertEq(handler.successfulFills(), 1);
         _assertAll();
     }
 
-    function test_validatedListingsUseOldFloorUntilCounterBumped() public {
+    function test_validatedListingsRevokedByRootChange() public {
         uint256 first = handler.postOrder(false, true, 0, UNIT, 0);
         uint256 second = handler.postOrder(false, true, 1, UNIT, 0);
         assertTrue(handler.validateOrder(first));
         assertTrue(handler.validateOrder(second));
-        ListoorVault vault = handler.vault();
-        address collection = address(handler.nft());
-        vm.prank(vault.owner());
-        vault.setListingFloor(collection, 2 * UNIT);
-        assertTrue(handler.fulfillOrder(first, 0));
-        handler.revokeOrders(3);
+        handler.configurePolicy((2 * UNIT) << 8); // Commit a higher floor without a separate cancel.
+        assertFalse(handler.fulfillOrder(first, 0));
         assertFalse(handler.fulfillOrder(second, 0));
         _assertAll();
     }
@@ -130,10 +120,8 @@ contract ListoorVaultInvariantForkTest is BaseFork {
         uint256 profitableBid = handler.postOrder(true, false, 0, UNIT / 4, 0);
         assertTrue(handler.fulfillOrder(profitableBid, 0));
         assertGt(handler.minimumEquity(), handler.INITIAL_EQUITY());
-        ListoorVault vault = handler.vault();
-        address collection = address(handler.edition());
-        vm.prank(vault.owner());
-        vault.setListingFloor(collection, UNIT / 4);
+        // Ceiling stays at one unit, so the lower raw floors still cannot undercut it.
+        handler.configurePolicy(4 | ((UNIT / 4) << 8));
         bool extracted = handler.matchOrders(0, UNIT, UNIT / 4);
         _assertAll();
         assertFalse(extracted);

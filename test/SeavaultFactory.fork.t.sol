@@ -3,16 +3,17 @@ pragma solidity 0.8.28;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
-import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
+import {Seavault} from "../src/Seavault.sol";
+import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {BaseFork} from "./helpers/BaseFork.sol";
+import {PolicyFixture} from "./helpers/PolicyFixture.sol";
 
 /// @notice Self-service deployment and the owner registry. Runs against the real CreateX factory,
 ///         which is what gives every vault the same address on every chain.
-contract ListoorVaultFactoryForkTest is BaseFork {
+contract SeavaultFactoryForkTest is BaseFork {
     bytes32 internal constant SALT = keccak256("primary");
 
-    ListoorVaultFactory internal factory;
+    SeavaultFactory internal factory;
     address internal factoryOwner = makeAddr("factoryOwner");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
@@ -21,30 +22,30 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function setUp() public {
         forkBase();
-        factory = new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        factory = new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
     }
 
     function test_createsVaultOwnedByCaller() public {
         address predicted = factory.predictVault(alice, SALT);
 
         vm.prank(alice);
-        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        Seavault vault = factory.createVault(SALT, aliceKeeper);
 
         assertEq(address(vault), predicted);
         assertEq(vault.owner(), alice);
         assertEq(vault.keeper(), aliceKeeper);
         assertEq(address(vault.seaport()), address(SEAPORT));
         assertEq(vault.conduit(), OPENSEA_CONDUIT);
-        assertEq(address(vault.subscriptions()), address(factory));
+        assertEq(address(vault.factory()), address(factory));
     }
 
     function test_registersVaultForLookup() public {
         vm.expectEmit(true, true, true, true);
-        emit ListoorVaultFactory.VaultCreated(
+        emit SeavaultFactory.VaultCreated(
             alice, factory.predictVault(alice, SALT), SALT, aliceKeeper
         );
         vm.prank(alice);
-        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        Seavault vault = factory.createVault(SALT, aliceKeeper);
 
         assertEq(factory.vaultOf(alice, SALT), address(vault));
         assertTrue(factory.isVault(address(vault)));
@@ -53,15 +54,13 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function test_allowsOneVaultPerCurrentOwner() public {
         vm.startPrank(alice);
-        ListoorVault first = factory.createVault(SALT, aliceKeeper);
-        vm.expectRevert(
-            abi.encodeWithSelector(ListoorVaultFactory.VaultAlreadyOwned.selector, alice)
-        );
+        Seavault first = factory.createVault(SALT, aliceKeeper);
+        vm.expectRevert(abi.encodeWithSelector(SeavaultFactory.VaultAlreadyOwned.selector, alice));
         factory.createVault(keccak256("secondary"), aliceKeeper);
         vm.stopPrank();
 
         vm.prank(bob);
-        ListoorVault bobsVault = factory.createVault(SALT, bobKeeper);
+        Seavault bobsVault = factory.createVault(SALT, bobKeeper);
 
         assertTrue(address(first) != address(bobsVault));
         assertEq(factory.ownedVaultOf(alice), address(first));
@@ -72,7 +71,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
     function test_firstNativeDepositCreatesAndFundsVaultInOneTransaction() public {
         vm.deal(alice, 1 ether);
         vm.prank(alice);
-        ListoorVault vault = factory.createVault{value: 1 ether}(SALT, aliceKeeper);
+        Seavault vault = factory.createVault{value: 1 ether}(SALT, aliceKeeper);
 
         assertEq(address(vault).balance, 1 ether);
         assertEq(address(factory).balance, 0);
@@ -81,7 +80,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function test_discoversCurrentAndPendingOwnersAfterTransfers() public {
         vm.prank(alice);
-        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        Seavault vault = factory.createVault(SALT, aliceKeeper);
 
         vm.prank(alice);
         vault.transferOwnership(bob);
@@ -100,7 +99,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function test_replacingAndCancellingPendingTransfersUpdatesDiscovery() public {
         vm.startPrank(alice);
-        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        Seavault vault = factory.createVault(SALT, aliceKeeper);
         vault.transferOwnership(bob);
         vault.transferOwnership(factoryOwner);
         assertEq(factory.pendingVaultsOf(bob, 0, 100).length, 0);
@@ -114,7 +113,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function test_ownerLookupFollowsRepeatedAndSelfTransfers() public {
         vm.startPrank(alice);
-        ListoorVault first = factory.createVault(SALT, aliceKeeper);
+        Seavault first = factory.createVault(SALT, aliceKeeper);
         first.transferOwnership(bob);
         vm.stopPrank();
         vm.startPrank(bob);
@@ -136,13 +135,13 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function test_cannotAcceptAnotherVaultWhileAlreadyOwningOne() public {
         vm.prank(alice);
-        ListoorVault incoming = factory.createVault(SALT, aliceKeeper);
+        Seavault incoming = factory.createVault(SALT, aliceKeeper);
         vm.prank(alice);
         incoming.transferOwnership(bob);
         vm.prank(bob);
-        ListoorVault existing = factory.createVault(SALT, bobKeeper);
+        Seavault existing = factory.createVault(SALT, bobKeeper);
 
-        vm.expectRevert(abi.encodeWithSelector(ListoorVaultFactory.VaultAlreadyOwned.selector, bob));
+        vm.expectRevert(abi.encodeWithSelector(SeavaultFactory.VaultAlreadyOwned.selector, bob));
         vm.prank(bob);
         incoming.acceptOwnership();
         assertEq(incoming.owner(), alice);
@@ -154,20 +153,20 @@ contract ListoorVaultFactoryForkTest is BaseFork {
 
     function test_canCreateAgainAfterTransferringOwnedVault() public {
         vm.prank(alice);
-        ListoorVault first = factory.createVault(SALT, aliceKeeper);
+        Seavault first = factory.createVault(SALT, aliceKeeper);
         vm.prank(alice);
         first.transferOwnership(bob);
         vm.prank(bob);
         first.acceptOwnership();
         vm.prank(alice);
-        ListoorVault replacement = factory.createVault(keccak256("replacement"), aliceKeeper);
+        Seavault replacement = factory.createVault(keccak256("replacement"), aliceKeeper);
         assertEq(factory.ownedVaultOf(alice), address(replacement));
         assertEq(factory.ownedVaultOf(bob), address(first));
         assertEq(factory.vaultOf(alice, SALT), address(first));
     }
 
     function test_onlyRegisteredVaultsCanUpdateDiscovery() public {
-        vm.expectRevert(abi.encodeWithSelector(ListoorVaultFactory.NotAVault.selector, alice));
+        vm.expectRevert(abi.encodeWithSelector(SeavaultFactory.NotAVault.selector, alice));
         vm.prank(alice);
         factory.syncVaultOwnership(alice, bob);
     }
@@ -178,7 +177,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
         for (uint256 i; i < 101; ++i) {
             address creator = address(uint160(i + 100));
             vm.prank(creator);
-            ListoorVault vault = factory.createVault(bytes32(i), aliceKeeper);
+            Seavault vault = factory.createVault(bytes32(i), aliceKeeper);
             vm.prank(creator);
             vault.transferOwnership(bob);
             if (i == 0) first = address(vault);
@@ -203,9 +202,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
         vm.startPrank(alice);
         factory.createVault(SALT, aliceKeeper);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ListoorVaultFactory.VaultAlreadyExists.selector, SALT)
-        );
+        vm.expectRevert(abi.encodeWithSelector(SeavaultFactory.VaultAlreadyExists.selector, SALT));
         factory.createVault(SALT, aliceKeeper);
         vm.stopPrank();
     }
@@ -228,8 +225,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
     /// @dev Two factories cannot land on the same vault address, so a redeployed factory (new
     ///      Seaport, say) yields a fresh set of vaults rather than colliding with the old ones.
     function test_vaultAddressIsScopedToTheFactory() public {
-        ListoorVaultFactory other =
-            new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        SeavaultFactory other = new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
 
         assertTrue(factory.predictVault(alice, SALT) != other.predictVault(alice, SALT));
     }
@@ -255,20 +251,20 @@ contract ListoorVaultFactoryForkTest is BaseFork {
     }
 
     function test_rejectsZeroKeeper() public {
-        vm.expectRevert(ListoorVaultFactory.ZeroAddress.selector);
+        vm.expectRevert(SeavaultFactory.ZeroAddress.selector);
         vm.prank(alice);
         factory.createVault(SALT, address(0));
     }
 
     function test_rejectsZeroAddressesAtDeployment() public {
-        vm.expectRevert(ListoorVaultFactory.ZeroAddress.selector);
-        new ListoorVaultFactory(address(0), OPENSEA_CONDUIT, factoryOwner);
+        vm.expectRevert(SeavaultFactory.ZeroAddress.selector);
+        new SeavaultFactory(address(0), OPENSEA_CONDUIT, factoryOwner);
 
-        vm.expectRevert(ListoorVaultFactory.ZeroAddress.selector);
-        new ListoorVaultFactory(address(SEAPORT), address(0), factoryOwner);
+        vm.expectRevert(SeavaultFactory.ZeroAddress.selector);
+        new SeavaultFactory(address(SEAPORT), address(0), factoryOwner);
 
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-        new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT, address(0));
+        new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, address(0));
     }
 
     /// @dev A new vault starts inside a trial window, so it can trade before anyone pays.
@@ -277,7 +273,7 @@ contract ListoorVaultFactoryForkTest is BaseFork {
         factory.setSubscription(factoryOwner, 0.05 ether);
 
         vm.prank(alice);
-        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        Seavault vault = factory.createVault(SALT, aliceKeeper);
 
         assertEq(factory.paidThrough(address(vault)), block.timestamp + factory.trialPeriod());
         assertTrue(factory.isSubscribed(address(vault)));
@@ -286,37 +282,45 @@ contract ListoorVaultFactoryForkTest is BaseFork {
         assertFalse(factory.isSubscribed(address(vault)));
     }
 
-    /// @dev A vault can renew itself out of its own proceeds.
-    function test_vaultRenewsItsOwnSubscription() public {
+    /// @dev Third parties extend service at the factory without spending any of the vault's assets.
+    function test_walletRenewsViaFactoryWithoutSpendingVaultBalance() public {
         vm.prank(factoryOwner);
         factory.setSubscription(factoryOwner, 0.05 ether);
         vm.prank(alice);
-        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        Seavault vault = factory.createVault(SALT, aliceKeeper);
         vm.deal(address(vault), 1 ether);
         uint256 trialExpiry = factory.paidThrough(address(vault));
         uint256 treasuryBefore = factoryOwner.balance;
 
         vm.prank(alice);
-        vault.renewSubscription(2, 0.1 ether);
+        (bool renewedFromVault,) = address(vault)
+            .call(abi.encodeWithSignature("renewSubscription(uint256,uint256)", 2, 0.1 ether));
+        assertFalse(renewedFromVault);
+
+        vm.deal(bob, 0.1 ether);
+        vm.prank(bob);
+        factory.extendSubscription{value: 0.1 ether}(address(vault), 2);
 
         assertEq(
             factory.paidThrough(address(vault)), trialExpiry + 2 * factory.SUBSCRIPTION_PERIOD()
         );
         assertEq(factoryOwner.balance - treasuryBefore, 0.1 ether);
-        assertEq(address(vault).balance, 0.9 ether);
+        assertEq(address(vault).balance, 1 ether);
+        assertEq(bob.balance, 0);
     }
 
     /// @dev A vault from the factory behaves exactly like a directly deployed one.
     function test_vaultFromFactoryEnforcesPolicy() public {
         vm.prank(alice);
-        ListoorVault vault = factory.createVault(SALT, aliceKeeper);
+        Seavault vault = factory.createVault(SALT, aliceKeeper);
 
+        bytes32 root = PolicyFixture.leaf(PolicyFixture.Rule(address(0xc0113c), 1 ether, 0));
         vm.prank(alice);
-        vault.setListingFloor(address(0xc0113c), 1 ether);
-        assertEq(vault.listingFloorFor(address(0xc0113c), 1), 1 ether);
+        vault.setPolicyRoot(bytes32(0), root);
+        assertEq(vault.policyRoot(), root);
 
         vm.expectRevert();
-        vault.setListingFloor(address(0xc0113c), 0);
+        vault.setPolicyRoot(root, bytes32(0));
     }
 }
 

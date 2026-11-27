@@ -11,6 +11,7 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -25,17 +26,16 @@ import {
     OrderComponents
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ISubscriptionRegistry} from "./interfaces/ISubscriptionRegistry.sol";
 import {IVaultOwnershipRegistry} from "./interfaces/IVaultOwnershipRegistry.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 
-/// @title ListoorVault
+/// @title Seavault
 /// @custom:security-contact security@kazani.ch
 /// @notice Custody for NFTs and wrapped native tokens that authorizes a hot "keeper" key to sign
 ///         Seaport orders on its behalf via EIP-1271, so the key trading the assets never owns them.
-/// @dev The keeper trades only within owner-set policy. With owner opt-in and an active subscription,
-///      it can also return ETH and ERC20 funds to the owner. Rotating `keeper` also bumps the vault's
+/// @dev The keeper trades only within owner-set policy. With owner opt-in, it can also return ETH
+///      and ERC20 funds to the owner. Rotating `keeper` also bumps the vault's
 ///      Seaport counter, which revokes every outstanding order at once.
 ///
 ///      A digest alone says nothing about what is being sold, so the signature blob carries the
@@ -49,17 +49,12 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      below a floor needs an owner transaction.
 ///
 ///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
-///      on-chain, which anyone can do with its signature, or partially filled. Policy changes reach
-///      those orders only through a cancel or a counter bump, but none of them outlives twice the
+///      on-chain, which anyone can do with its signature, or partially filled. Replacing the collection
+///      policy root bumps the Seaport counter to retire those orders too. Other policy changes reach
+///      them through a cancel or a counter bump. Orders outlive validation by at most twice the
 ///      `maxOrderDuration` in force when the vault vouched: an order may neither span nor start
-///      further ahead than that, and lowering it later reaches only orders not yet vouched for.
-///
-///      The keeper enforces free-tier listing and offer limits offchain. Direct buys and automatic
-///      withdrawals require an active subscription, checked against `subscriptions`. A lapse leaves
-///      order signatures, owner withdrawals, cancels and policy working, so custody is never hostage.
-///      The registry can separately block new order validation, direct buys and automatic withdrawals,
-///      including paid vaults. Owner withdrawals, cancellations and other policy remain available.
-contract ListoorVault is Ownable2Step, IERC1271 {
+///      further ahead than that.
+contract Seavault is Ownable2Step, IERC1271 {
     using SafeERC20 for IERC20;
 
     /// @notice Sentinel for the native asset, matching Seaport's `NATIVE` items and used as the key
@@ -77,6 +72,8 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     uint256 private constant BPS_DENOMINATOR = 10_000;
     uint256 private constant DEFAULT_MAX_FEE_BPS = 1000;
     uint256 private constant DEFAULT_MAX_ORDER_DURATION = 30 days;
+    uint256 private constant MAX_POLICY_DEPTH = 10;
+    uint256 private constant MAX_POLICY_COLLECTIONS = 2 ** MAX_POLICY_DEPTH;
 
     bytes32 private constant EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -92,8 +89,8 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice The only operator the vault ever approves: Seaport's conduit for OpenSea's key.
     address public immutable conduit;
 
-    /// @notice Subscription entitlement and trading blocklist, typically the vault's factory.
-    ISubscriptionRegistry public immutable subscriptions;
+    /// @notice The factory that keeps the vault's ownership index.
+    IVaultOwnershipRegistry public immutable factory;
 
     bytes32 private immutable seaportVersionHash;
 
@@ -110,31 +107,36 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @notice Tokens accepted as payment, keyed by address (`NATIVE_TOKEN` for the native asset).
     mapping(address token => bool allowed) public paymentTokenAllowed;
 
-    /// @notice Minimum proceeds per unit sold, per collection. Zero makes a collection unlistable,
-    ///         except for tokens with a floor of their own.
-    mapping(address collection => uint256 floorPerUnit) public listingFloor;
+    /// @notice Owner's commitment to collection floors and ceilings. Zero disables listings, bids
+    ///         and buys.
+    bytes32 public policyRoot;
 
-    /// @notice Per-token override of `listingFloor`. Zero falls back to the collection floor.
+    /// @notice Per-token floor override. Zero falls back to the proven collection floor.
     mapping(address collection => mapping(uint256 tokenId => uint256 floorPerUnit)) public
         tokenListingFloor;
 
-    /// @notice Maximum the vault may bid or buy at per unit, per collection. Zero makes a collection
-    ///         unbiddable. Listing floors in the collection are raised to it.
-    mapping(address collection => uint256 ceilingPerUnit) public offerCeiling;
+    /// @notice The collection's minimum proceeds and maximum spend per NFT, the leaf's salt, and
+    ///         its inclusion proof against `policyRoot`. Amounts use an allowed payment token.
+    struct CollectionWitness {
+        address collection;
+        uint256 floor;
+        uint256 ceiling;
+        bytes32 salt;
+        bytes32[] siblings;
+    }
 
     /// @notice Native ETH buys may still spend. ERC20 buys draw on the conduit allowance, as bids do.
     uint256 public nativeBuyAllowance;
 
     /// @notice Owner opt-in to keeper-triggered ETH and ERC20 withdrawals to the current owner.
-    /// @dev Disabled by default and cleared when ownership changes. Execution requires a subscription.
+    /// @dev Disabled by default and cleared when ownership changes.
     bool public autoWithdrawEnabled;
 
     event KeeperUpdated(address keeper);
-    event ListingFloorUpdated(address indexed collection, uint256 floorPerUnit);
+    event PolicyRootUpdated(bytes32 indexed root);
     event TokenListingFloorUpdated(
         address indexed collection, uint256 indexed tokenId, uint256 floorPerUnit
     );
-    event OfferCeilingUpdated(address indexed collection, uint256 ceilingPerUnit);
     event PaymentTokenUpdated(address indexed token, bool allowed);
     event MaxOrderDurationUpdated(uint256 maxOrderDuration);
     event MaxFeeBpsUpdated(uint256 maxFeeBps);
@@ -153,6 +155,8 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error EmptyOffer();
     error UnsupportedOfferItem(ItemType itemType);
     error UnsupportedConsiderationItem(ItemType itemType);
+    error PolicyRootMismatch(bytes32 expectedRoot, bytes32 currentRoot);
+    error InvalidCollectionWitness();
     error MalformedNativeItem(address token);
     error PaymentTokenNotAllowed(address token);
     error CollectionNotListable(address collection);
@@ -161,10 +165,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     error PriceAboveCeiling(uint256 maxSpend, uint256 spend);
     error NativeBuyAllowanceExceeded(uint256 allowance, uint256 value);
     error FeeShareTooHigh(uint256 fees, uint256 total);
-    error SubscriptionInactive();
     error AutoWithdrawDisabled();
-    error VaultBlocked();
-    error SubscriptionCostAboveMax(uint256 cost, uint256 maxCost);
     error ItemNotReceivedByVault(address recipient);
     error NoNftConsideration();
     error NotOwnerOrKeeper(address caller);
@@ -182,11 +183,11 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         address conduit_,
         address owner_,
         address keeper_,
-        address subscriptions_
+        address factory_
     ) Ownable(owner_) {
         if (
             seaport_ == address(0) || conduit_ == address(0) || keeper_ == address(0)
-                || subscriptions_ == address(0)
+                || factory_ == address(0)
         ) {
             revert ZeroAddress();
         }
@@ -201,7 +202,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
         seaport = ConsiderationInterface(seaport_);
         conduit = conduit_;
-        subscriptions = ISubscriptionRegistry(subscriptions_);
+        factory = IVaultOwnershipRegistry(factory_);
         seaportVersionHash = versionHash;
         keeper = keeper_;
         maxOrderDuration = DEFAULT_MAX_ORDER_DURATION;
@@ -222,8 +223,9 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @param digest EIP-712 digest Seaport derived for the order it is about to fulfill, the
     ///        `cancellationDigest` OpenSea checks before cancelling an order offchain, or the
     ///        EIP-191 hash of an OpenSea sign-in message.
-    /// @param signature `abi.encode(OrderComponents, bytes)`: the order behind `digest` and the keeper
-    ///        key's ECDSA signature over it. For a cancellation, `abi.encode(orderHash, bytes)`. For
+    /// @param signature `abi.encode(OrderComponents, bytes, CollectionWitness[])`: the order behind
+    ///        `digest`, the keeper key's ECDSA signature and the witnesses for its NFT collections in
+    ///        ascending address order. For a cancellation, `abi.encode(orderHash, bytes)`. For
     ///        a sign-in, `abi.encode(OPENSEA_LOGIN_TAG, messageBody, deadline, ownerSignature)`, where
     ///        `messageBody` is the sign-in message minus its first two lines and their newlines.
     /// @dev Reverts rather than returning a non-magic value, so failures surface with a reason.
@@ -264,17 +266,18 @@ contract ListoorVault is Ownable2Step, IERC1271 {
             return IERC1271.isValidSignature.selector;
         }
 
-        if (subscriptions.isBlocked(address(this))) revert VaultBlocked();
-
-        (OrderComponents memory order, bytes memory orderSignature) =
-            abi.decode(signature, (OrderComponents, bytes));
+        (
+            OrderComponents memory order,
+            bytes memory orderSignature,
+            CollectionWitness[] memory witnesses
+        ) = abi.decode(signature, (OrderComponents, bytes, CollectionWitness[]));
 
         if (SeaportOrderHash.digest(separator, order) != digest) {
             revert DigestMismatch();
         }
         if (ECDSA.recover(digest, orderSignature) != keeper) revert UnauthorizedSigner();
 
-        _validatePolicy(order);
+        _validatePolicy(order, witnesses);
 
         return IERC1271.isValidSignature.selector;
     }
@@ -288,16 +291,6 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     ///         `OrderHash(bytes32 orderHash)` under Seaport's domain.
     function cancellationDigest(bytes32 orderHash) external view returns (bytes32) {
         return SeaportOrderHash.cancellationDigest(seaportDomainSeparator(), orderHash);
-    }
-
-    /// @notice Minimum proceeds per unit for a token, per-token override taking precedence, and
-    ///         never below the collection's offer ceiling. Zero means the token cannot be listed.
-    /// @dev The ceiling bound keeps a compromised keeper from buying at the ceiling and selling back
-    ///      at a lower floor on repeat. Bidding itself never needs a floor.
-    function listingFloorFor(address collection, uint256 tokenId) public view returns (uint256) {
-        uint256 floorPerUnit = tokenListingFloor[collection][tokenId];
-        if (floorPerUnit == 0) floorPerUnit = listingFloor[collection];
-        return floorPerUnit == 0 ? 0 : Math.max(floorPerUnit, offerCeiling[collection]);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -315,22 +308,26 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         emit KeeperUpdated(newKeeper);
     }
 
-    function setListingFloor(address collection, uint256 floorPerUnit) external onlyOwner {
-        listingFloor[collection] = floorPerUnit;
-        emit ListingFloorUpdated(collection, floorPerUnit);
+    /// @notice Activates a collection policy and revokes outstanding orders in the same transaction.
+    /// @param expectedRoot The root the owner built the update from, to prevent overwriting an edit.
+    /// @param newRoot The new commitment, or zero to disable listings, bids and buys.
+    function setPolicyRoot(bytes32 expectedRoot, bytes32 newRoot) external onlyOwner {
+        bytes32 currentRoot = policyRoot;
+        if (currentRoot != expectedRoot) revert PolicyRootMismatch(expectedRoot, currentRoot);
+        if (currentRoot == newRoot) return;
+        policyRoot = newRoot;
+        seaport.incrementCounter();
+        emit PolicyRootUpdated(newRoot);
     }
 
+    /// @notice Sets a token's own listing floor. An override still requires a collection witness
+    ///         so the vault can enforce the ceiling as well as the floor.
     function setTokenListingFloor(address collection, uint256 tokenId, uint256 floorPerUnit)
         external
         onlyOwner
     {
         tokenListingFloor[collection][tokenId] = floorPerUnit;
         emit TokenListingFloorUpdated(collection, tokenId, floorPerUnit);
-    }
-
-    function setOfferCeiling(address collection, uint256 ceilingPerUnit) external onlyOwner {
-        offerCeiling[collection] = ceilingPerUnit;
-        emit OfferCeilingUpdated(collection, ceilingPerUnit);
     }
 
     /// @notice Allows or revokes a token as payment.
@@ -352,12 +349,8 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         emit MaxFeeBpsUpdated(newMaxFeeBps);
     }
 
-    /// @notice Opts into automatic withdrawals while subscribed and unblocked, or opts out any time.
+    /// @notice Sets whether the keeper can return ETH and ERC20 funds to the owner.
     function setAutoWithdrawEnabled(bool enabled) external onlyOwner {
-        if (enabled) {
-            if (subscriptions.isBlocked(address(this))) revert VaultBlocked();
-            if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
-        }
         autoWithdrawEnabled = enabled;
         emit AutoWithdrawEnabledUpdated(enabled);
     }
@@ -400,6 +393,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @param order The listing as Seaport fills it, with the zone's `extraData` when it has one.
     /// @param fulfillerConduitKey Conduit ERC20 payments are pulled through. Only the vault's own
     ///        conduit holds an allowance, so any other key leaves an ERC20 price unpaid.
+    /// @param witnesses Policies for the purchased NFT collections in ascending address order.
     /// @dev Bounded like a bid: everything paid, fees and tips included and counted at their high,
     ///      has to fit within the ceilings of the NFTs bought, counted at their low. Both sides scale
     ///      with the fill fraction alike, so the bound holds for partial fills too. Native payment
@@ -407,22 +401,25 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     ///      Seaport refunds whatever a falling price leaves, without restoring the allowance.
     ///      The vault's own listings are refused: buying one would only move its NFT to the owner
     ///      at the cost of the fees.
-    function buy(AdvancedOrder calldata order, bytes32 fulfillerConduitKey)
-        external
-        onlyOwnerOrKeeper
-        returns (bool)
-    {
-        if (subscriptions.isBlocked(address(this))) revert VaultBlocked();
-        if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
-        if (order.parameters.offerer == address(this)) revert InvalidOfferer();
+    function buy(
+        AdvancedOrder calldata order,
+        bytes32 fulfillerConduitKey,
+        CollectionWitness[] calldata witnesses
+    ) external onlyOwnerOrKeeper returns (bool) {
+        if (order.parameters.offerer == address(this)) {
+            revert InvalidOfferer();
+        }
 
+        _checkWitnessCount(witnesses.length, order.parameters.offer.length);
+        CollectionWitness[] memory policies = witnesses;
+        _verifyCollectionWitnesses(policies);
         uint256 maxSpend;
         for (uint256 i; i < order.parameters.offer.length; ++i) {
             OfferItem calldata item = order.parameters.offer[i];
             if (item.itemType != ItemType.ERC721 && item.itemType != ItemType.ERC1155) {
                 revert UnsupportedOfferItem(item.itemType);
             }
-            uint256 ceilingPerUnit = offerCeiling[item.token];
+            uint256 ceilingPerUnit = _collectionPolicy(policies, item.token).ceiling;
             if (ceilingPerUnit == 0) revert CollectionNotBiddable(item.token);
             maxSpend += ceilingPerUnit * Math.min(item.startAmount, item.endAmount);
         }
@@ -458,8 +455,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     function transferOwnership(address newOwner) public override onlyOwner {
         address previousPendingOwner = pendingOwner();
         super.transferOwnership(newOwner);
-        IVaultOwnershipRegistry(address(subscriptions))
-            .syncVaultOwnership(owner(), previousPendingOwner);
+        factory.syncVaultOwnership(owner(), previousPendingOwner);
     }
 
     function acceptOwnership() public override {
@@ -470,8 +466,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
             autoWithdrawEnabled = false;
             emit AutoWithdrawEnabledUpdated(false);
         }
-        IVaultOwnershipRegistry(address(subscriptions))
-            .syncVaultOwnership(previousOwner, previousPendingOwner);
+        factory.syncVaultOwnership(previousOwner, previousPendingOwner);
     }
 
     /// @dev Disabled: the owner controls withdrawals and is the only way to revoke the keeper.
@@ -493,17 +488,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         IWETH(weth).withdraw(amount);
     }
 
-    /// @notice Buys further subscription periods for this vault out of its own native balance.
-    /// @param maxCost Most the owner agrees to pay, so a price change landing first cannot take more.
-    /// @dev Owner only: letting the keeper spend vault funds, even on the service, would hand a
-    ///      compromised key a way to burn them. Keepers watch the expiry and raise the alarm instead.
-    function renewSubscription(uint256 periods, uint256 maxCost) external onlyOwner {
-        uint256 cost = subscriptions.priceFor(address(this)) * periods;
-        if (cost > maxCost) revert SubscriptionCostAboveMax(cost, maxCost);
-        subscriptions.extendSubscription{value: cost}(address(this), periods);
-    }
-
-    /// @notice Returns ETH to the current owner after opt-in, while subscribed and unblocked.
+    /// @notice Returns ETH to the current owner after opt-in.
     /// @dev The keeper submits the transaction and pays gas; the recipient cannot be chosen.
     function autoWithdrawETH(uint256 amount) external onlyOwnerOrKeeper {
         _checkAutoWithdraw();
@@ -512,7 +497,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         emit EthWithdrawn(to, amount);
     }
 
-    /// @notice Returns ERC20 funds to the current owner after opt-in, while subscribed and unblocked.
+    /// @notice Returns ERC20 funds to the current owner after opt-in.
     function autoWithdrawERC20(address token, uint256 amount) external onlyOwnerOrKeeper {
         _checkAutoWithdraw();
         IERC20(token).safeTransfer(owner(), amount);
@@ -576,7 +561,10 @@ contract ListoorVault is Ownable2Step, IERC1271 {
                            POLICY ENFORCEMENT
     //////////////////////////////////////////////////////////////*/
 
-    function _validatePolicy(OrderComponents memory order) private view {
+    function _validatePolicy(OrderComponents memory order, CollectionWitness[] memory witnesses)
+        private
+        view
+    {
         if (order.offerer != address(this)) revert InvalidOfferer();
         if (order.endTime <= order.startTime) revert InvalidTimeRange();
 
@@ -596,9 +584,13 @@ contract ListoorVault is Ownable2Step, IERC1271 {
         // tokens out is a bid. Zone and order type are left alone; both only ever restrict fills.
         ItemType offered = order.offer[0].itemType;
         if (offered == ItemType.ERC721 || offered == ItemType.ERC1155) {
-            _validateSale(order);
+            _checkWitnessCount(witnesses.length, order.offer.length);
+            _verifyCollectionWitnesses(witnesses);
+            _validateSale(order, witnesses);
         } else if (offered == ItemType.ERC20) {
-            _validateBid(order);
+            _checkWitnessCount(witnesses.length, order.consideration.length);
+            _verifyCollectionWitnesses(witnesses);
+            _validateBid(order, witnesses);
         } else {
             revert UnsupportedOfferItem(offered);
         }
@@ -607,7 +599,10 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @dev Selling: every offered token must have a floor, and the vault's own proceeds must clear
     ///      the sum of those floors. Fees are excluded from the proceeds and capped separately, so
     ///      they cannot double as a payout channel.
-    function _validateSale(OrderComponents memory order) private view {
+    function _validateSale(OrderComponents memory order, CollectionWitness[] memory witnesses)
+        private
+        view
+    {
         uint256 requiredProceeds;
         for (uint256 i; i < order.offer.length; ++i) {
             OfferItem memory item = order.offer[i];
@@ -615,9 +610,13 @@ contract ListoorVault is Ownable2Step, IERC1271 {
                 revert UnsupportedOfferItem(item.itemType);
             }
 
-            uint256 floorPerUnit = listingFloorFor(item.token, item.identifierOrCriteria);
+            CollectionWitness memory policy = _collectionPolicy(witnesses, item.token);
+            uint256 floorPerUnit = tokenListingFloor[item.token][item.identifierOrCriteria];
+            if (floorPerUnit == 0) floorPerUnit = policy.floor;
             if (floorPerUnit == 0) revert CollectionNotListable(item.token);
 
+            // Selling below the ceiling would let the keeper buy and sell back at a loss repeatedly.
+            floorPerUnit = Math.max(floorPerUnit, policy.ceiling);
             // Partial fills settle pro rata, so the floor binds per unit offered.
             requiredProceeds += floorPerUnit * Math.max(item.startAmount, item.endAmount);
         }
@@ -632,7 +631,10 @@ contract ListoorVault is Ownable2Step, IERC1271 {
     /// @dev Bidding: everything the vault offers is spend, and it is bounded by the ceilings of the
     ///      tokens the order delivers back to the vault. Criteria items are validated the same way;
     ///      the collection is what is constrained, the token id is not.
-    function _validateBid(OrderComponents memory order) private view {
+    function _validateBid(OrderComponents memory order, CollectionWitness[] memory witnesses)
+        private
+        view
+    {
         uint256 spend;
         for (uint256 i; i < order.offer.length; ++i) {
             OfferItem memory item = order.offer[i];
@@ -652,7 +654,7 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
             if (item.recipient != address(this)) revert ItemNotReceivedByVault(item.recipient);
 
-            uint256 ceilingPerUnit = offerCeiling[item.token];
+            uint256 ceilingPerUnit = _collectionPolicy(witnesses, item.token).ceiling;
             if (ceilingPerUnit == 0) revert CollectionNotBiddable(item.token);
             // Counted at its lowest: a late fill delivers whatever the amount has decayed to.
             maxSpend += ceilingPerUnit * Math.min(item.startAmount, item.endAmount);
@@ -660,6 +662,55 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
         if (maxSpend == 0) revert NoNftConsideration();
         if (spend > maxSpend) revert PriceAboveCeiling(maxSpend, spend);
+    }
+
+    function _checkWitnessCount(uint256 witnessCount, uint256 itemCount) private pure {
+        if (witnessCount > itemCount || witnessCount > MAX_POLICY_COLLECTIONS) {
+            revert InvalidCollectionWitness();
+        }
+    }
+
+    /// @dev Verify a collection once even if several items use it. Address order gives callers a
+    ///      canonical witness array and bounds item lookups to logarithmic work.
+    function _verifyCollectionWitnesses(CollectionWitness[] memory witnesses) private view {
+        bytes32 root = policyRoot;
+        if (root == bytes32(0)) revert InvalidCollectionWitness();
+        address previous;
+        for (uint256 i; i < witnesses.length; ++i) {
+            CollectionWitness memory witness = witnesses[i];
+            if (witness.collection <= previous || witness.siblings.length > MAX_POLICY_DEPTH) {
+                revert InvalidCollectionWitness();
+            }
+            // Double-hash leaves to distinguish them from the tree's pairs of 32-byte hashes.
+            bytes32 leaf = keccak256(
+                bytes.concat(
+                    keccak256(
+                        abi.encode(witness.collection, witness.floor, witness.ceiling, witness.salt)
+                    )
+                )
+            );
+            if (!MerkleProof.verify(witness.siblings, root, leaf)) {
+                revert InvalidCollectionWitness();
+            }
+            previous = witness.collection;
+        }
+    }
+
+    function _collectionPolicy(CollectionWitness[] memory witnesses, address collection)
+        private
+        pure
+        returns (CollectionWitness memory)
+    {
+        uint256 start;
+        uint256 end = witnesses.length;
+        while (start < end) {
+            uint256 middle = (start + end) / 2;
+            CollectionWitness memory witness = witnesses[middle];
+            if (witness.collection == collection) return witness;
+            if (witness.collection < collection) start = middle + 1;
+            else end = middle;
+        }
+        revert InvalidCollectionWitness();
     }
 
     /// @return proceeds the least the vault can end up with, so variable amounts count at their low
@@ -742,7 +793,5 @@ contract ListoorVault is Ownable2Step, IERC1271 {
 
     function _checkAutoWithdraw() private view {
         if (!autoWithdrawEnabled) revert AutoWithdrawDisabled();
-        if (subscriptions.isBlocked(address(this))) revert VaultBlocked();
-        if (!subscriptions.isSubscribed(address(this))) revert SubscriptionInactive();
     }
 }

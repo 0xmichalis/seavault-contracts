@@ -9,11 +9,12 @@ import {
     OrderParameters
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
+import {Seavault} from "../src/Seavault.sol";
+import {PolicyFixture} from "./helpers/PolicyFixture.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
 /// @notice Policy enforced when the vault buys someone else's listing for its owner.
-contract ListoorVaultBuyTest is VaultTest {
+contract SeavaultBuyTest is VaultTest {
     bytes32 internal constant CONDUIT_KEY = keccak256("conduit key");
 
     address internal seller = makeAddr("seller");
@@ -29,7 +30,7 @@ contract ListoorVaultBuyTest is VaultTest {
         AdvancedOrder memory order = sellersListing(CEILING);
 
         vm.prank(keeper);
-        assertTrue(vault.buy(order, CONDUIT_KEY));
+        assertTrue(vault.buy(order, CONDUIT_KEY, witnessesForBuy(order)));
 
         assertEq(seaport.fulfilledRecipient(), owner);
         assertEq(seaport.fulfilledValue(), CEILING);
@@ -42,7 +43,7 @@ contract ListoorVaultBuyTest is VaultTest {
         order.parameters.consideration[0] = payment(address(weth), CEILING, seller);
 
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
 
         assertEq(seaport.fulfilledValue(), 0);
         assertEq(seaport.fulfilledRecipient(), owner);
@@ -54,7 +55,7 @@ contract ListoorVaultBuyTest is VaultTest {
         AdvancedOrder memory order = sellersListing(CEILING);
 
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
 
         assertEq(vault.nativeBuyAllowance(), 10 ether - CEILING);
     }
@@ -66,11 +67,11 @@ contract ListoorVaultBuyTest is VaultTest {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ListoorVault.NativeBuyAllowanceExceeded.selector, CEILING - 1, CEILING
+                Seavault.NativeBuyAllowanceExceeded.selector, CEILING - 1, CEILING
             )
         );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
     function test_spendsTheAllowanceToTheLastWei() public {
@@ -79,7 +80,7 @@ contract ListoorVaultBuyTest is VaultTest {
         vault.setNativeBuyAllowance(CEILING);
 
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
 
         assertEq(vault.nativeBuyAllowance(), 0);
     }
@@ -91,7 +92,7 @@ contract ListoorVaultBuyTest is VaultTest {
         order.denominator = 4;
 
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
 
         assertEq(seaport.fulfilledValue(), CEILING);
     }
@@ -103,10 +104,10 @@ contract ListoorVaultBuyTest is VaultTest {
             withFee(order.parameters.consideration, vault.NATIVE_TOKEN(), 1);
 
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, CEILING + 1)
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, CEILING + 1)
         );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
     /// @dev A price that moves counts at its highest, since the fill may land at either end.
@@ -115,10 +116,10 @@ contract ListoorVaultBuyTest is VaultTest {
         order.parameters.consideration[0].endAmount = CEILING + 1;
 
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, CEILING + 1)
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, CEILING + 1)
         );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
     /// @dev A quantity that moves counts at its lowest, which is all the vault is sure to get.
@@ -127,22 +128,48 @@ contract ListoorVaultBuyTest is VaultTest {
         order.parameters.offer[0].endAmount = 1;
 
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, 2 * CEILING)
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, 2 * CEILING)
         );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
     function test_rejectsCollectionWithoutCeiling() public {
         AdvancedOrder memory order = sellersListing(CEILING);
-        vm.prank(owner);
-        vault.setOfferCeiling(address(nft), 0);
+        setNftPolicy(FLOOR, 0);
 
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVault.CollectionNotBiddable.selector, address(nft))
+            abi.encodeWithSelector(Seavault.CollectionNotBiddable.selector, address(nft))
         );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
+    }
+
+    function test_rejectsTamperedCeilingBeforeSpending() public {
+        AdvancedOrder memory order = sellersListing(CEILING + 1);
+        Seavault.CollectionWitness[] memory witnesses = witnessesForBuy(order);
+        witnesses[0].ceiling = CEILING + 1;
+
+        vm.expectRevert(Seavault.InvalidCollectionWitness.selector);
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY, witnesses);
+        assertEq(vault.nativeBuyAllowance(), 10 ether);
+    }
+
+    function test_rejectsOldProofAfterRootChangeOrClear() public {
+        AdvancedOrder memory order = sellersListing(CEILING);
+        Seavault.CollectionWitness[] memory witnesses = witnessesForBuy(order);
+        setNftPolicy(FLOOR, CEILING / 2);
+        vm.expectRevert(Seavault.InvalidCollectionWitness.selector);
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY, witnesses);
+
+        bytes32 active = vault.policyRoot();
+        vm.prank(owner);
+        vault.setPolicyRoot(active, bytes32(0));
+        vm.expectRevert(Seavault.InvalidCollectionWitness.selector);
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY, witnesses);
     }
 
     function test_rejectsPaymentTokenNotAllowed() public {
@@ -151,10 +178,10 @@ contract ListoorVaultBuyTest is VaultTest {
         vault.setPaymentTokenAllowed(address(0), false);
 
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVault.PaymentTokenNotAllowed.selector, address(0))
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0))
         );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
     /// @dev Buying never hands over the vault's own NFTs.
@@ -164,12 +191,10 @@ contract ListoorVaultBuyTest is VaultTest {
             ConsiderationItem(ItemType.ERC721, address(nft), TOKEN_ID + 1, 1, 1, payable(seller));
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                ListoorVault.UnsupportedConsiderationItem.selector, ItemType.ERC721
-            )
+            abi.encodeWithSelector(Seavault.UnsupportedConsiderationItem.selector, ItemType.ERC721)
         );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
     /// @dev Buying the vault's own listing would only move its NFT to the owner at the cost of fees.
@@ -177,9 +202,9 @@ contract ListoorVaultBuyTest is VaultTest {
         AdvancedOrder memory order = sellersListing(CEILING);
         order.parameters.offerer = address(vault);
 
-        vm.expectRevert(ListoorVault.InvalidOfferer.selector);
+        vm.expectRevert(Seavault.InvalidOfferer.selector);
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
     /// @dev A listing names the tokens it sells, so criteria never apply.
@@ -189,56 +214,43 @@ contract ListoorVaultBuyTest is VaultTest {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ListoorVault.UnsupportedOfferItem.selector, ItemType.ERC721_WITH_CRITERIA
+                Seavault.UnsupportedOfferItem.selector, ItemType.ERC721_WITH_CRITERIA
             )
         );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
-    function test_rejectsBuyWhileLapsed() public {
-        AdvancedOrder memory order = sellersListing(CEILING);
-        subscriptions.set(false, 0.01 ether);
+    function test_policyStillBoundsBuyWhileLapsed() public {
+        AdvancedOrder memory order = sellersListing(CEILING + 1);
+        subscriptions.set(false);
 
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, CEILING + 1)
+        );
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
-    function test_blockingStopsBothOwnerAndKeeperBuys() public {
+    function test_flaggedVaultSupportsOwnerAndKeeperBuys() public {
         AdvancedOrder memory order = sellersListing(CEILING);
         subscriptions.setBlocked(true);
 
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
         vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
+        assertTrue(vault.buy(order, CONDUIT_KEY, witnessesForBuy(order)));
         vm.prank(owner);
-        vault.buy(order, CONDUIT_KEY);
-        assertEq(vault.nativeBuyAllowance(), 10 ether);
-        assertEq(address(vault).balance, 10 ether);
-    }
+        assertTrue(vault.buy(order, CONDUIT_KEY, witnessesForBuy(order)));
 
-    function test_unblockingDoesNotBypassTheSubscriptionGate() public {
-        AdvancedOrder memory order = sellersListing(CEILING);
-        subscriptions.set(false, 0.01 ether);
-        subscriptions.setBlocked(true);
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
-        vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
-
-        subscriptions.setBlocked(false);
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
-        vm.prank(keeper);
-        vault.buy(order, CONDUIT_KEY);
+        assertEq(vault.nativeBuyAllowance(), 10 ether - 2 * CEILING);
+        assertEq(address(vault).balance, 10 ether - 2 * CEILING);
     }
 
     function test_strangerCannotBuy() public {
         AdvancedOrder memory order = sellersListing(CEILING);
 
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.NotOwnerOrKeeper.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.NotOwnerOrKeeper.selector, stranger));
         vm.prank(stranger);
-        vault.buy(order, CONDUIT_KEY);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }
 
     /// @dev Seller's ERC721 listing at `price` in native ETH.
@@ -290,5 +302,13 @@ contract ListoorVaultBuyTest is VaultTest {
             signature: "",
             extraData: ""
         });
+    }
+
+    function witnessesForBuy(AdvancedOrder memory order)
+        private
+        view
+        returns (Seavault.CollectionWitness[] memory)
+    {
+        return PolicyFixture.forOfferItems(nftPolicy, editionPolicy, order.parameters.offer);
     }
 }

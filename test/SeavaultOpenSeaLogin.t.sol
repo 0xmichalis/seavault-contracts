@@ -5,7 +5,7 @@ import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
+import {Seavault} from "../src/Seavault.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
 /// @notice Owner wallet that is itself a contract, e.g. a multisig holding the vault.
@@ -27,7 +27,7 @@ contract MockOwnerWallet is IERC1271 {
 
 /// @notice OpenSea sign-in as the vault: OpenSea asks the vault to vouch for a Sign-In with Ethereum
 ///         message naming it, and the vault does so when its owner approved that exact message.
-contract ListoorVaultOpenSeaLoginTest is VaultTest {
+contract SeavaultOpenSeaLoginTest is VaultTest {
     bytes4 internal constant MAGIC_VALUE = IERC1271.isValidSignature.selector;
 
     string internal constant STATEMENT =
@@ -103,14 +103,14 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         assertEq(vault.isValidSignature(digest, signature), MAGIC_VALUE);
 
         vm.warp(deadline + 1);
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.OpenSeaLoginExpired.selector, deadline));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.OpenSeaLoginExpired.selector, deadline));
         vault.isValidSignature(digest, signature);
     }
 
     /// @dev Signing in is an owner action, so it keeps working while the keeper is cut off.
     function test_vouchesWhileBlockedOrLapsed() public {
         subscriptions.setBlocked(true);
-        subscriptions.set(false, 0.01 ether);
+        subscriptions.set(false);
 
         assertEq(signIn(vault, websiteBody(), ownerPk), MAGIC_VALUE);
     }
@@ -121,7 +121,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         transferVault(address(wallet));
 
         assertEq(signIn(vault, websiteBody(), walletSignerPk), MAGIC_VALUE);
-        expectSignInRevert(ListoorVault.UnauthorizedSigner.selector, vault, websiteBody(), ownerPk);
+        expectSignInRevert(Seavault.UnauthorizedSigner.selector, vault, websiteBody(), ownerPk);
     }
 
     function testFuzz_vouchesForAnyBodyTheOwnerApproved(bytes memory body, uint32 validFor) public {
@@ -139,21 +139,19 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
     //////////////////////////////////////////////////////////////*/
 
     function test_rejectsTheKeepersApproval() public {
-        expectSignInRevert(ListoorVault.UnauthorizedSigner.selector, vault, websiteBody(), keeperPk);
+        expectSignInRevert(Seavault.UnauthorizedSigner.selector, vault, websiteBody(), keeperPk);
     }
 
     function test_rejectsAStrangersApproval() public {
         (, uint256 strangerPk) = makeAddrAndKey("stranger");
-        expectSignInRevert(
-            ListoorVault.UnauthorizedSigner.selector, vault, websiteBody(), strangerPk
-        );
+        expectSignInRevert(Seavault.UnauthorizedSigner.selector, vault, websiteBody(), strangerPk);
     }
 
     function test_rejectsARejectingContractOwner() public {
         (address walletSigner,) = makeAddrAndKey("walletSigner");
         transferVault(address(new MockOwnerWallet(walletSigner)));
 
-        expectSignInRevert(ListoorVault.UnauthorizedSigner.selector, vault, websiteBody(), ownerPk);
+        expectSignInRevert(Seavault.UnauthorizedSigner.selector, vault, websiteBody(), ownerPk);
     }
 
     /// @dev The approval follows `owner()`: a pending owner cannot sign in yet, and a previous owner
@@ -163,16 +161,14 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         vm.prank(owner);
         vault.transferOwnership(newOwner);
 
-        expectSignInRevert(
-            ListoorVault.UnauthorizedSigner.selector, vault, websiteBody(), newOwnerPk
-        );
+        expectSignInRevert(Seavault.UnauthorizedSigner.selector, vault, websiteBody(), newOwnerPk);
         assertEq(signIn(vault, websiteBody(), ownerPk), MAGIC_VALUE);
 
         vm.prank(newOwner);
         vault.acceptOwnership();
 
         assertEq(signIn(vault, websiteBody(), newOwnerPk), MAGIC_VALUE);
-        expectSignInRevert(ListoorVault.UnauthorizedSigner.selector, vault, websiteBody(), ownerPk);
+        expectSignInRevert(Seavault.UnauthorizedSigner.selector, vault, websiteBody(), ownerPk);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -183,7 +179,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         bytes32 digest = personalSignDigest(fullMessage(vault, sdkBody()));
         bytes memory signature = envelope(vault, websiteBody(), deadline, ownerPk);
 
-        vm.expectRevert(ListoorVault.DigestMismatch.selector);
+        vm.expectRevert(Seavault.DigestMismatch.selector);
         vault.isValidSignature(digest, signature);
     }
 
@@ -213,14 +209,14 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         bytes memory signature = envelope(vault, websiteBody(), deadline, ownerPk);
 
         for (uint256 i; i < messages.length; ++i) {
-            vm.expectRevert(ListoorVault.DigestMismatch.selector);
+            vm.expectRevert(Seavault.DigestMismatch.selector);
             vault.isValidSignature(personalSignDigest(messages[i]), signature);
         }
     }
 
     function test_rejectsAnApprovalForAnotherVault() public {
-        ListoorVault other =
-            new ListoorVault(address(seaport), conduit, owner, keeper, address(subscriptions));
+        Seavault other =
+            new Seavault(address(seaport), conduit, owner, keeper, address(subscriptions));
         bytes memory body = bytes(websiteBody());
         bytes memory signature = abi.encode(
             vault.OPENSEA_LOGIN_TAG(),
@@ -229,7 +225,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
             sign(ownerPk, approvalHash(other, fullMessage(vault, websiteBody()), deadline))
         );
 
-        vm.expectRevert(ListoorVault.UnauthorizedSigner.selector);
+        vm.expectRevert(Seavault.UnauthorizedSigner.selector);
         vault.isValidSignature(personalSignDigest(fullMessage(vault, websiteBody())), signature);
     }
 
@@ -238,7 +234,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         bytes memory signature = envelope(vault, websiteBody(), deadline, ownerPk);
 
         vm.chainId(block.chainid + 1);
-        vm.expectRevert(ListoorVault.UnauthorizedSigner.selector);
+        vm.expectRevert(Seavault.UnauthorizedSigner.selector);
         vault.isValidSignature(digest, signature);
     }
 
@@ -250,7 +246,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
             sign(ownerPk, approvalHash(vault, fullMessage(vault, websiteBody()), deadline))
         );
 
-        vm.expectRevert(ListoorVault.UnauthorizedSigner.selector);
+        vm.expectRevert(Seavault.UnauthorizedSigner.selector);
         vault.isValidSignature(personalSignDigest(fullMessage(vault, websiteBody())), signature);
     }
 
@@ -258,7 +254,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         vm.assume(digest != personalSignDigest(fullMessage(vault, websiteBody())));
         bytes memory signature = envelope(vault, websiteBody(), deadline, ownerPk);
 
-        vm.expectRevert(ListoorVault.DigestMismatch.selector);
+        vm.expectRevert(Seavault.DigestMismatch.selector);
         vault.isValidSignature(digest, signature);
     }
 
@@ -276,13 +272,13 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
     /// @dev With one key as owner and keeper, a sign-in approval still cannot pass as an order, nor
     ///      an order signature as a sign-in approval.
     function test_signInsAndOrdersStaySeparateUnderOneKey() public {
-        ListoorVault shared =
-            new ListoorVault(address(seaport), conduit, owner, owner, address(subscriptions));
+        Seavault shared =
+            new Seavault(address(seaport), conduit, owner, owner, address(subscriptions));
         vm.startPrank(owner);
         shared.setPaymentTokenAllowed(shared.NATIVE_TOKEN(), true);
-        shared.setListingFloor(address(nft), FLOOR);
+        shared.setPolicyRoot(bytes32(0), collectionPolicyRoot());
         vm.stopPrank();
-        ListoorVault original = vault;
+        Seavault original = vault;
         vault = shared;
 
         bytes32 orderDigest = digestOf(listing(FLOOR));
@@ -291,7 +287,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         );
 
         bytes memory signInEnvelope = envelope(shared, websiteBody(), deadline, ownerPk);
-        vm.expectRevert(ListoorVault.DigestMismatch.selector);
+        vm.expectRevert(Seavault.DigestMismatch.selector);
         shared.isValidSignature(orderDigest, signInEnvelope);
 
         bytes memory orderSignatureAsApproval = abi.encode(
@@ -300,7 +296,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
             deadline,
             signatureFor(listing(FLOOR), ownerPk)
         );
-        vm.expectRevert(ListoorVault.UnauthorizedSigner.selector);
+        vm.expectRevert(Seavault.UnauthorizedSigner.selector);
         shared.isValidSignature(
             personalSignDigest(fullMessage(shared, websiteBody())), orderSignatureAsApproval
         );
@@ -331,7 +327,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         );
     }
 
-    function fullMessage(ListoorVault account, string memory body)
+    function fullMessage(Seavault account, string memory body)
         internal
         pure
         returns (string memory)
@@ -354,7 +350,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         );
     }
 
-    function approvalHash(ListoorVault account, string memory message, uint256 deadline_)
+    function approvalHash(Seavault account, string memory message, uint256 deadline_)
         internal
         view
         returns (bytes32)
@@ -385,7 +381,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         return abi.encodePacked(r, s, v);
     }
 
-    function envelope(ListoorVault account, string memory body, uint256 deadline_, uint256 pk)
+    function envelope(Seavault account, string memory body, uint256 deadline_, uint256 pk)
         internal
         view
         returns (bytes memory)
@@ -398,7 +394,7 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         );
     }
 
-    function signIn(ListoorVault account, string memory body, uint256 pk)
+    function signIn(Seavault account, string memory body, uint256 pk)
         internal
         view
         returns (bytes4)
@@ -408,12 +404,9 @@ contract ListoorVaultOpenSeaLoginTest is VaultTest {
         );
     }
 
-    function expectSignInRevert(
-        bytes4 selector,
-        ListoorVault account,
-        string memory body,
-        uint256 pk
-    ) internal {
+    function expectSignInRevert(bytes4 selector, Seavault account, string memory body, uint256 pk)
+        internal
+    {
         bytes32 digest = personalSignDigest(fullMessage(account, body));
         bytes memory signature = envelope(account, body, deadline, pk);
         vm.expectRevert(selector);

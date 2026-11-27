@@ -9,11 +9,11 @@ import {
     OrderComponents
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
+import {Seavault} from "../src/Seavault.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
 /// @notice Policy enforced on orders where the vault sells an NFT.
-contract ListoorVaultListingTest is VaultTest {
+contract SeavaultListingTest is VaultTest {
     bytes4 internal constant MAGIC_VALUE = IERC1271.isValidSignature.selector;
 
     function test_acceptsListingAtFloor() public view {
@@ -26,14 +26,14 @@ contract ListoorVaultListingTest is VaultTest {
 
     function test_rejectsListingBelowFloor() public {
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR, FLOOR - 1),
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR, FLOOR - 1),
             listing(FLOOR - 1)
         );
     }
 
     function test_rejectsDumpListing() public {
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR, 1), listing(1 wei)
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR, 1), listing(1 wei)
         );
     }
 
@@ -46,7 +46,7 @@ contract ListoorVaultListingTest is VaultTest {
         uint256 fee = (FLOOR * 250) / BPS;
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR, FLOOR - fee),
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR, FLOOR - fee),
             listingWithFee(FLOOR, 250)
         );
     }
@@ -62,7 +62,7 @@ contract ListoorVaultListingTest is VaultTest {
 
         expectRevertOn(
             abi.encodeWithSelector(
-                ListoorVault.FeeShareTooHigh.selector, (price * feeBps) / BPS, price
+                Seavault.FeeShareTooHigh.selector, (price * feeBps) / BPS, price
             ),
             listingWithFee(price, feeBps)
         );
@@ -72,9 +72,7 @@ contract ListoorVaultListingTest is VaultTest {
         OrderComponents memory order = listing(FLOOR);
         order.consideration[0].recipient = payable(stranger);
 
-        expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR, 0), order
-        );
+        expectRevertOn(abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR, 0), order);
     }
 
     /// @dev Components are only trustworthy once they hash to the digest Seaport is validating.
@@ -83,10 +81,11 @@ contract ListoorVaultListingTest is VaultTest {
         OrderComponents memory tamperedOrder = listing(FLOOR);
         tamperedOrder.consideration[0].recipient = payable(stranger);
         bytes32 digest = digestOf(signedOrder);
-        bytes memory tamperedPayload =
-            abi.encode(tamperedOrder, signatureFor(signedOrder, keeperPk));
+        bytes memory tamperedPayload = abi.encode(
+            tamperedOrder, signatureFor(signedOrder, keeperPk), policyWitnesses(tamperedOrder)
+        );
 
-        vm.expectRevert(ListoorVault.DigestMismatch.selector);
+        vm.expectRevert(Seavault.DigestMismatch.selector);
         vault.isValidSignature(digest, tamperedPayload);
     }
 
@@ -94,9 +93,7 @@ contract ListoorVaultListingTest is VaultTest {
         (, uint256 attackerPk) = makeAddrAndKey("attacker");
 
         expectRevertOnSignedBy(
-            abi.encodeWithSelector(ListoorVault.UnauthorizedSigner.selector),
-            listing(FLOOR),
-            attackerPk
+            abi.encodeWithSelector(Seavault.UnauthorizedSigner.selector), listing(FLOOR), attackerPk
         );
     }
 
@@ -108,52 +105,50 @@ contract ListoorVaultListingTest is VaultTest {
         vm.prank(owner);
         vault.setKeeper(makeAddr("newKeeper"));
 
-        expectRevertOn(abi.encodeWithSelector(ListoorVault.UnauthorizedSigner.selector), order);
+        expectRevertOn(abi.encodeWithSelector(Seavault.UnauthorizedSigner.selector), order);
     }
 
     function test_rejectsOrderOfferedBySomeoneElse() public {
         OrderComponents memory order = listing(FLOOR);
         order.offerer = stranger;
 
-        expectRevertOn(abi.encodeWithSelector(ListoorVault.InvalidOfferer.selector), order);
+        expectRevertOn(abi.encodeWithSelector(Seavault.InvalidOfferer.selector), order);
     }
 
     function test_rejectsCollectionWithoutFloor() public {
         OrderComponents memory order = listing(FLOOR);
         order.offer[0].token = address(0xdead);
 
-        expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.CollectionNotListable.selector, address(0xdead)),
-            order
-        );
+        expectRevertOn(abi.encodeWithSelector(Seavault.InvalidCollectionWitness.selector), order);
     }
 
     function test_perTokenFloorOverridesCollectionFloor() public {
         vm.prank(owner);
         vault.setTokenListingFloor(address(nft), TOKEN_ID, FLOOR * 10);
 
-        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID), FLOOR * 10);
-        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID + 1), FLOOR);
+        assertEq(validate(listing(FLOOR * 10)), MAGIC_VALUE);
+        OrderComponents memory otherToken = listing(FLOOR);
+        otherToken.offer[0].identifierOrCriteria = TOKEN_ID + 1;
+        assertEq(validate(otherToken), MAGIC_VALUE);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR * 10, FLOOR),
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR * 10, FLOOR),
             listing(FLOOR)
         );
     }
 
     /// @dev A per-token floor makes one token listable in an otherwise unlistable collection.
     function test_perTokenFloorWithoutCollectionFloor() public {
-        vm.startPrank(owner);
-        vault.setListingFloor(address(nft), 0);
+        setNftPolicy(0, CEILING);
+        vm.prank(owner);
         vault.setTokenListingFloor(address(nft), TOKEN_ID, FLOOR);
-        vm.stopPrank();
 
         assertEq(validate(listing(FLOOR)), MAGIC_VALUE);
 
         OrderComponents memory otherToken = listing(FLOOR);
         otherToken.offer[0].identifierOrCriteria = TOKEN_ID + 1;
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.CollectionNotListable.selector, address(nft)),
+            abi.encodeWithSelector(Seavault.CollectionNotListable.selector, address(nft)),
             otherToken
         );
     }
@@ -161,11 +156,10 @@ contract ListoorVaultListingTest is VaultTest {
     /// @dev A collection the vault may bid on never sells below the ceiling, or a compromised keeper
     ///      could buy at the ceiling and sell back at the floor on repeat.
     function test_listingMustClearCeilingWhenAboveFloor() public {
-        vm.prank(owner);
-        vault.setOfferCeiling(address(nft), FLOOR * 2);
+        setNftPolicy(FLOOR, FLOOR * 2);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR * 2, FLOOR * 2 - 1),
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR * 2, FLOOR * 2 - 1),
             listing(FLOOR * 2 - 1)
         );
         assertEq(validate(listing(FLOOR * 2)), MAGIC_VALUE);
@@ -173,23 +167,23 @@ contract ListoorVaultListingTest is VaultTest {
 
     /// @dev Per-token floors are raised the same way, so none can undercut the ceiling.
     function test_ceilingRaisesEveryFloorBelowIt() public {
-        vm.startPrank(owner);
-        vault.setOfferCeiling(address(nft), FLOOR * 2);
+        setNftPolicy(FLOOR, FLOOR * 2);
+        vm.prank(owner);
         vault.setTokenListingFloor(address(nft), TOKEN_ID, FLOOR / 2);
-        vm.stopPrank();
 
-        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID), FLOOR * 2);
-        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID + 1), FLOOR * 2);
+        expectRevertOn(
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR * 2, FLOOR),
+            listing(FLOOR)
+        );
+        assertEq(validate(listing(FLOOR * 2)), MAGIC_VALUE);
     }
 
     /// @dev A ceiling alone does not make a collection listable.
     function test_ceilingDoesNotMakeACollectionListable() public {
-        vm.prank(owner);
-        vault.setListingFloor(address(nft), 0);
+        setNftPolicy(0, CEILING);
 
-        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID), 0);
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.CollectionNotListable.selector, address(nft)),
+            abi.encodeWithSelector(Seavault.CollectionNotListable.selector, address(nft)),
             listing(FLOOR)
         );
     }
@@ -200,9 +194,7 @@ contract ListoorVaultListingTest is VaultTest {
             ConsiderationItem(ItemType.ERC721, address(nft), 1, 1, 1, payable(address(vault)));
 
         expectRevertOn(
-            abi.encodeWithSelector(
-                ListoorVault.UnsupportedConsiderationItem.selector, ItemType.ERC721
-            ),
+            abi.encodeWithSelector(Seavault.UnsupportedConsiderationItem.selector, ItemType.ERC721),
             order
         );
     }
@@ -212,8 +204,7 @@ contract ListoorVaultListingTest is VaultTest {
         order.consideration[0] = payment(address(0xbeef), FLOOR, address(vault));
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PaymentTokenNotAllowed.selector, address(0xbeef)),
-            order
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0xbeef)), order
         );
     }
 
@@ -222,7 +213,7 @@ contract ListoorVaultListingTest is VaultTest {
         order.consideration[0].token = address(weth);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.MalformedNativeItem.selector, address(weth)), order
+            abi.encodeWithSelector(Seavault.MalformedNativeItem.selector, address(weth)), order
         );
     }
 
@@ -233,7 +224,7 @@ contract ListoorVaultListingTest is VaultTest {
 
         expectRevertOn(
             abi.encodeWithSelector(
-                ListoorVault.OrderDurationTooLong.selector, maxDuration, maxDuration + 1
+                Seavault.OrderDurationTooLong.selector, maxDuration, maxDuration + 1
             ),
             order
         );
@@ -256,7 +247,7 @@ contract ListoorVaultListingTest is VaultTest {
 
         expectRevertOn(
             abi.encodeWithSelector(
-                ListoorVault.OrderStartsTooLate.selector, latestStart, order.startTime
+                Seavault.OrderStartsTooLate.selector, latestStart, order.startTime
             ),
             order
         );
@@ -284,7 +275,7 @@ contract ListoorVaultListingTest is VaultTest {
         OrderComponents memory order = listing(FLOOR);
         order.endTime = order.startTime;
 
-        expectRevertOn(abi.encodeWithSelector(ListoorVault.InvalidTimeRange.selector), order);
+        expectRevertOn(abi.encodeWithSelector(Seavault.InvalidTimeRange.selector), order);
     }
 
     /// @dev Editions fill pro rata, so the floor is enforced per unit offered.
@@ -292,7 +283,7 @@ contract ListoorVaultListingTest is VaultTest {
         assertEq(validate(editionListing(3, FLOOR * 3)), MAGIC_VALUE);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR * 3, FLOOR * 3 - 1),
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR * 3, FLOOR * 3 - 1),
             editionListing(3, FLOOR * 3 - 1)
         );
     }
@@ -304,7 +295,7 @@ contract ListoorVaultListingTest is VaultTest {
         order.consideration[0].endAmount = FLOOR - 1;
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR, FLOOR - 1), order
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR, FLOOR - 1), order
         );
     }
 
@@ -317,7 +308,7 @@ contract ListoorVaultListingTest is VaultTest {
 
         expectRevertOn(
             abi.encodeWithSelector(
-                ListoorVault.FeeShareTooHigh.selector, fee * 2, price - fee + fee * 2
+                Seavault.FeeShareTooHigh.selector, fee * 2, price - fee + fee * 2
             ),
             order
         );
@@ -330,8 +321,7 @@ contract ListoorVaultListingTest is VaultTest {
         order.offer[1] = OfferItem(ItemType.ERC1155, address(edition), EDITION_ID, 2, 2);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR * 3, FLOOR * 2),
-            order
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR * 3, FLOOR * 2), order
         );
 
         assertEq(validate(_withProceeds(order, FLOOR * 3)), MAGIC_VALUE);
@@ -344,8 +334,7 @@ contract ListoorVaultListingTest is VaultTest {
         order.offer[1] = OfferItem(ItemType.ERC20, address(weth), 0, 1 ether, 1 ether);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.UnsupportedOfferItem.selector, ItemType.ERC20),
-            order
+            abi.encodeWithSelector(Seavault.UnsupportedOfferItem.selector, ItemType.ERC20), order
         );
     }
 
@@ -355,7 +344,7 @@ contract ListoorVaultListingTest is VaultTest {
 
         expectRevertOn(
             abi.encodeWithSelector(
-                ListoorVault.UnsupportedOfferItem.selector, ItemType.ERC721_WITH_CRITERIA
+                Seavault.UnsupportedOfferItem.selector, ItemType.ERC721_WITH_CRITERIA
             ),
             order
         );
@@ -365,15 +354,14 @@ contract ListoorVaultListingTest is VaultTest {
         OrderComponents memory order = listing(FLOOR);
         order.offer = new OfferItem[](0);
 
-        expectRevertOn(abi.encodeWithSelector(ListoorVault.EmptyOffer.selector), order);
+        expectRevertOn(abi.encodeWithSelector(Seavault.EmptyOffer.selector), order);
     }
 
     function testFuzz_rejectsAnythingBelowFloor(uint96 price) public {
         vm.assume(price < FLOOR);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, FLOOR, price),
-            listing(price)
+            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR, price), listing(price)
         );
     }
 

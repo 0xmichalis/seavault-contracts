@@ -9,11 +9,11 @@ import {
     OrderComponents
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
+import {Seavault} from "../src/Seavault.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
 /// @notice Policy enforced on orders where the vault bids for an NFT.
-contract ListoorVaultOfferTest is VaultTest {
+contract SeavaultOfferTest is VaultTest {
     bytes4 internal constant MAGIC_VALUE = IERC1271.isValidSignature.selector;
 
     function test_acceptsOfferAtCeiling() public view {
@@ -26,30 +26,28 @@ contract ListoorVaultOfferTest is VaultTest {
 
     /// @dev Bidding never needs a floor: an unlistable collection cannot be cycled, so it is safe.
     function test_acceptsOfferOnCollectionWithoutFloor() public {
-        vm.prank(owner);
-        vault.setListingFloor(address(nft), 0);
+        setNftPolicy(0, CEILING);
 
         assertEq(validate(offer(CEILING)), MAGIC_VALUE);
     }
 
     /// @dev The floor-ceiling rule is enforced on the sale side, where the token is known.
     function test_acceptsOfferAboveCollectionFloor() public {
-        vm.prank(owner);
-        vault.setOfferCeiling(address(nft), FLOOR * 2);
+        setNftPolicy(FLOOR, FLOOR * 2);
 
         assertEq(validate(offer(FLOOR * 2)), MAGIC_VALUE);
     }
 
     function test_rejectsOfferAboveCeiling() public {
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, CEILING + 1),
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, CEILING + 1),
             offer(CEILING + 1)
         );
     }
 
     function test_rejectsInflatedOffer() public {
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, 1000 ether),
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, 1000 ether),
             offer(1000 ether)
         );
     }
@@ -58,10 +56,7 @@ contract ListoorVaultOfferTest is VaultTest {
         OrderComponents memory order = offer(CEILING);
         order.consideration[0].token = address(0xdead);
 
-        expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.CollectionNotBiddable.selector, address(0xdead)),
-            order
-        );
+        expectRevertOn(abi.encodeWithSelector(Seavault.InvalidCollectionWitness.selector), order);
     }
 
     function test_rejectsNftDeliveredElsewhere() public {
@@ -69,7 +64,7 @@ contract ListoorVaultOfferTest is VaultTest {
         order.consideration[0].recipient = payable(stranger);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.ItemNotReceivedByVault.selector, stranger), order
+            abi.encodeWithSelector(Seavault.ItemNotReceivedByVault.selector, stranger), order
         );
     }
 
@@ -83,8 +78,7 @@ contract ListoorVaultOfferTest is VaultTest {
         order.consideration = withFee(order.consideration, address(0xbeef), 1 ether);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PaymentTokenNotAllowed.selector, address(0xbeef)),
-            order
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0xbeef)), order
         );
     }
 
@@ -93,8 +87,7 @@ contract ListoorVaultOfferTest is VaultTest {
         order.offer[0].token = address(0xbeef);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PaymentTokenNotAllowed.selector, address(0xbeef)),
-            order
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0xbeef)), order
         );
     }
 
@@ -102,7 +95,7 @@ contract ListoorVaultOfferTest is VaultTest {
         OrderComponents memory order = offer(CEILING);
         order.consideration[0] = payment(address(weth), 0, address(vault));
 
-        expectRevertOn(abi.encodeWithSelector(ListoorVault.NoNftConsideration.selector), order);
+        expectRevertOn(abi.encodeWithSelector(Seavault.NoNftConsideration.selector), order);
     }
 
     /// @dev Collection and trait offers carry criteria items; the collection is what is bounded.
@@ -115,7 +108,7 @@ contract ListoorVaultOfferTest is VaultTest {
 
         expectRevertOn(
             abi.encodeWithSelector(
-                ListoorVault.PriceAboveCeiling.selector, CEILING * 3, CEILING * 3 + 1
+                Seavault.PriceAboveCeiling.selector, CEILING * 3, CEILING * 3 + 1
             ),
             criteriaOffer(CEILING * 3 + 1, 3)
         );
@@ -136,8 +129,7 @@ contract ListoorVaultOfferTest is VaultTest {
         order.consideration[0].endAmount = 1;
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, CEILING * 3),
-            order
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, CEILING * 3), order
         );
     }
 
@@ -148,7 +140,7 @@ contract ListoorVaultOfferTest is VaultTest {
         order.consideration[0].startAmount = 10;
         order.consideration[0].endAmount = 0;
 
-        expectRevertOn(abi.encodeWithSelector(ListoorVault.NoNftConsideration.selector), order);
+        expectRevertOn(abi.encodeWithSelector(Seavault.NoNftConsideration.selector), order);
     }
 
     /// @dev A rising amount has to stay under the ceiling at its highest point.
@@ -157,8 +149,7 @@ contract ListoorVaultOfferTest is VaultTest {
         order.offer[0].endAmount = CEILING * 2;
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, CEILING * 2),
-            order
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, CEILING * 2), order
         );
     }
 
@@ -169,8 +160,7 @@ contract ListoorVaultOfferTest is VaultTest {
         order.offer[1] = OfferItem(ItemType.ERC20, address(weth), 0, 1, 1);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, CEILING + 1),
-            order
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, CEILING + 1), order
         );
     }
 
@@ -181,8 +171,7 @@ contract ListoorVaultOfferTest is VaultTest {
         order.offer[1] = OfferItem(ItemType.ERC721, address(nft), TOKEN_ID, 1, 1);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.UnsupportedOfferItem.selector, ItemType.ERC721),
-            order
+            abi.encodeWithSelector(Seavault.UnsupportedOfferItem.selector, ItemType.ERC721), order
         );
     }
 
@@ -204,7 +193,7 @@ contract ListoorVaultOfferTest is VaultTest {
         vm.assume(price > CEILING);
 
         expectRevertOn(
-            abi.encodeWithSelector(ListoorVault.PriceAboveCeiling.selector, CEILING, price),
+            abi.encodeWithSelector(Seavault.PriceAboveCeiling.selector, CEILING, price),
             offer(price)
         );
     }
