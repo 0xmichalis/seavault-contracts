@@ -125,7 +125,12 @@ contract VaultInvariantHandler is Test {
         minimumEquity = equity;
     }
 
-    constructor(ConsiderationInterface seaport_, address conduit_, bytes32 conduitKey_) {
+    constructor(
+        ConsiderationInterface seaport_,
+        address conduit_,
+        bytes32 conduitKey_,
+        address usdc
+    ) {
         seaport = seaport_;
         conduit = conduit_;
         conduitKey = conduitKey_;
@@ -133,7 +138,7 @@ contract VaultInvariantHandler is Test {
         owners[1] = address(new InvariantOwner());
         nft = new MockERC721();
         edition = new MockERC1155();
-        factory = new SeavaultFactory(address(seaport_), conduit_, address(this));
+        factory = new SeavaultFactory(address(seaport_), conduit_, address(this), WETH, usdc);
         factory.setTrialPeriod(1 hours);
         vm.prank(owners[0]);
         vault = factory.createVault(keccak256("invariants"), _keeper());
@@ -142,8 +147,6 @@ contract VaultInvariantHandler is Test {
         editionPolicy = PolicyFixture.Rule(address(edition), UNIT, UNIT);
 
         vm.startPrank(owners[0]);
-        vault.setPaymentTokenAllowed(address(0), true);
-        vault.setPaymentTokenAllowed(WETH, true);
         vault.setPolicyRoot(bytes32(0), PolicyFixture.root(nftPolicy, editionPolicy));
         vault.setConduitApprovalForAll(address(nft), true);
         vault.setConduitApprovalForAll(address(edition), true);
@@ -418,8 +421,6 @@ contract VaultInvariantHandler is Test {
                 vault.setTokenListingFloor(address(nft), i, 0);
             }
         }
-        vault.setPaymentTokenAllowed(WETH, seed & 64 == 0);
-        vault.setPaymentTokenAllowed(address(0), seed & 128 == 0);
         vault.setMaxFeeBps(bound(seed >> 16, 0, 1000));
         vm.stopPrank();
     }

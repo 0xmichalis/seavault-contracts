@@ -12,6 +12,8 @@ abstract contract BaseFork is Test {
     address internal constant OPENSEA_CONDUIT = 0x1E0049783F008A0085193E00003D00cd54003c71;
     bytes32 internal constant OPENSEA_CONDUIT_KEY =
         0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000;
+    address internal constant WETH = 0x4200000000000000000000000000000000000006;
+    address internal constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
     uint256 internal constant BASE_FORK_BLOCK = 49_144_697;
 
     function forkBase() internal {

@@ -2,7 +2,7 @@
 
 EIP-1271 vault contracts for non-custodial Seaport order signing.
 
-`Seavault` holds the NFTs and wrapped native tokens. A hot **keeper** key can _sign Seaport orders
+`Seavault` holds NFTs and funds. A hot **keeper** key can _sign Seaport orders
 on the vault's behalf_ and _buy listings for its owner_. Owners can also opt into automatic
 ETH/ERC20 withdrawals that send funds only to the current owner. The vault signs only for sales at
 or above an owner-set floor and bids at or below an owner-set ceiling, and buys only within that
@@ -20,11 +20,15 @@ ownership changes. Every vault is a separate contract with its own assets, owner
   the keeper's ECDSA signature, and the collection witnesses. The vault re-derives the digest
   from the supplied components and checks it matches the one Seaport is about to execute.
 - The vault verifies the witnesses against the owner's active `policyRoot` and applies the proven
-  collection **listing floors** and **offer ceilings** to the order items. Per-token floor overrides,
-  the payment-token allowlist, the sale fee cap and the maximum order duration are read from storage.
-- A collection never sells below its ceiling: floors under it are raised to it. Otherwise a
-  compromised keeper could buy at the ceiling and sell back at the floor on repeat. Bidding needs no
-  floor.
+  collection **listing floors** and **offer ceilings** to the order items. Native per-token floor
+  overrides, the sale fee cap and the maximum order duration are read from storage.
+- The fixed payment currencies are the native asset and the factory's `wNative` and `usdc`.
+  The native asset and its wrapper use the same price units. A USDC order uses USDC for
+  every payment item covered by the vault's policy, including fees and direct-buy tips.
+- Within a denomination, a collection's listing floor is raised to its offer ceiling to prevent
+  repeat buy-and-sell losses within the configured bounds. Bidding needs no floor. When enabling
+  both denominations, the owner sets bounds in each currency and accounts for changes in their
+  relative value.
 - **Seaport stops asking the vault once an order is validated on-chain or partially filled.** Anyone
   can validate a posted order with its signature, and collection offers with a quantity fill
   partially as a matter of course. Updating the collection policy root also bumps the vault's
@@ -83,25 +87,29 @@ highest.
 ## Collection policy snapshots
 
 The vault stores one active root for collection price rules. Keep the matching snapshot off-chain so
-the owner and their keepers can rebuild proofs independently. Use the following canonical encoding:
+the owner and their keepers can rebuild proofs independently. Use the following canonical encoding.
 
-1. Record up to 1,024 rows of `(collection, floor, ceiling, salt)`. Use unique nonzero collection
-   addresses and decimal uint256 strings for the two amounts in the payment asset's smallest units.
+1. Record up to 1,024 rows of `(collection, floor, ceiling, salt)`. Assign each row to the native
+   denomination or to USDC. Use a nonzero collection address, at most one row per collection
+   and denomination, and decimal uint256 strings for amounts in that currency's smallest units.
    Generate an independent, cryptographically random nonzero `bytes32` salt when adding a row or
-   changing its amounts. Sort the rows by the numeric value of the collection address.
-2. For each row, compute `keccak256(bytes.concat(keccak256(abi.encode(collection, floor, ceiling, salt))))`
-   using the Solidity types `(address, uint256, uint256, bytes32)`.
+   changing its amounts. Sort native rows first, then USDC rows, each by numeric collection address.
+2. For each row, compute `inner = keccak256(abi.encode(collection, floor, ceiling, salt))`
+   using the Solidity types `(address, uint256, uint256, bytes32)`. The native leaf is
+   `keccak256(bytes.concat(inner))`. The USDC leaf is `keccak256(bytes.concat(inner, hex"01"))`.
 3. Pair adjacent hashes at each level and hash the two hashes in ascending byte order. Promote an
    unpaired last hash unchanged. Repeat to obtain the root. The empty snapshot has root zero.
 4. Keep the snapshot before calling `setPolicyRoot(expectedRoot, newRoot)`. The contract requires
    `expectedRoot` to match the active root. A different root retires live orders, so the keeper
    uses the new proofs and Seaport counter when reposting. A zero root disables listings, bids and buys.
 
-A witness contains a row and its sibling hashes from leaf to root, with at most ten siblings.
-Send one witness per distinct NFT collection in ascending address order. Use the NFT offers when
-listing or buying, and the NFT consideration when bidding. A collection with token floors only needs
-an explicit row with a zero default floor and its configured ceiling, even when that ceiling is zero.
-The vault applies a nonzero token override before raising the resulting floor to the proven ceiling.
+A witness contains the collection, amounts, salt and up to ten sibling hashes from leaf to root.
+Send one witness in the order's denomination per distinct NFT collection, in ascending address
+order. Use the NFT offers when listing or buying, and the NFT consideration when bidding.
+For native orders, a collection with token floors only needs an explicit native row with a zero
+default floor and its configured ceiling, even when that ceiling is zero. The vault applies a
+nonzero token override before raising the resulting floor to the proven ceiling. USDC listings
+use their collection's USDC floor and ceiling.
 The salts protect unrevealed collection rows against guessing from a root or sibling hash.
 Token-level overrides and global vault limits are readable on-chain.
 

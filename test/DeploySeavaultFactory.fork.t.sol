@@ -25,26 +25,39 @@ contract DeploySeavaultFactoryForkTest is BaseFork {
     function test_deploysAtPredictedAddress() public {
         address predicted = deployScript.predict(deployer, seed);
 
-        address factory = _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        address factory =
+            _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner, WETH, USDC);
 
         assertEq(factory, predicted);
         assertEq(SeavaultFactory(factory).seaport(), address(SEAPORT));
         assertEq(SeavaultFactory(factory).conduit(), OPENSEA_CONDUIT);
         assertEq(SeavaultFactory(factory).owner(), factoryOwner);
+        assertEq(SeavaultFactory(factory).wNative(), WETH);
+        assertEq(SeavaultFactory(factory).usdc(), USDC);
     }
 
     /// @dev The whole point of CREATE3: chain and constructor arguments do not move the address, so
-    ///      each chain's own Seaport and conduit can be baked in.
+    ///      each chain's Seaport, conduit and payment tokens can be baked in.
     function test_sameAddressAcrossChainsAndConstructorArguments() public {
         uint256 beforeDeploy = vm.snapshotState();
-        address onBase = _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        address onBase =
+            _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner, WETH, USDC);
 
         vm.revertToState(beforeDeploy);
         vm.chainId(1);
-        address onEthereum =
-            _deploy(deployer, address(0x5EA), address(0xc0ffee), makeAddr("otherOwner"));
+        address otherWrapper = makeAddr("otherWrapper");
+        address onEthereum = _deploy(
+            deployer,
+            address(0x5EA),
+            address(0xc0ffee),
+            makeAddr("otherOwner"),
+            otherWrapper,
+            address(0)
+        );
 
         assertEq(onEthereum, onBase);
+        assertEq(SeavaultFactory(onEthereum).wNative(), otherWrapper);
+        assertEq(SeavaultFactory(onEthereum).usdc(), address(0));
     }
 
     function test_saltSeedChangesTheAddress() public view {
@@ -56,11 +69,15 @@ contract DeploySeavaultFactoryForkTest is BaseFork {
     function test_strangerCannotOccupyTheAddress() public {
         address predicted = deployScript.predict(deployer, seed);
 
-        address squatted =
-            _deploy(makeAddr("stranger"), address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        address squatted = _deploy(
+            makeAddr("stranger"), address(SEAPORT), OPENSEA_CONDUIT, factoryOwner, WETH, USDC
+        );
 
         assertTrue(squatted != predicted);
-        assertEq(_deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner), predicted);
+        assertEq(
+            _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner, WETH, USDC),
+            predicted
+        );
     }
 
     function test_saltEncodesDeployerAndDisablesChainProtection() public view {
@@ -72,12 +89,16 @@ contract DeploySeavaultFactoryForkTest is BaseFork {
     }
 
     /// @dev Salt and init code are resolved before the prank so that it lands on the deploy call.
-    function _deploy(address from, address seaport, address conduit, address owner)
-        private
-        returns (address)
-    {
+    function _deploy(
+        address from,
+        address seaport,
+        address conduit,
+        address owner,
+        address wNative,
+        address usdc
+    ) private returns (address) {
         bytes32 salt = deployScript.saltFor(deployer, seed);
-        bytes memory initCode = deployScript.initCode(seaport, conduit, owner);
+        bytes memory initCode = deployScript.initCode(seaport, conduit, owner, wNative, usdc);
 
         vm.prank(from);
         return createX.deployCreate3(salt, initCode);

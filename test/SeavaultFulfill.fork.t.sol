@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Hashes} from "@openzeppelin/contracts/utils/cryptography/Hashes.sol";
 import {ItemType, OrderType} from "seaport-types/src/lib/ConsiderationEnums.sol";
 import {
     AdvancedOrder,
@@ -23,9 +24,9 @@ import {MockERC721} from "./mocks/TokenMocks.sol";
 ///         through the factory: Seaport calls the vault's `isValidSignature`, the conduit moves the
 ///         assets, and policy failures block the fill while free-tier orders remain fillable.
 contract SeavaultFulfillForkTest is BaseFork {
-    address internal constant WETH = 0x4200000000000000000000000000000000000006;
     uint256 internal constant TOKEN_ID = 42;
     uint256 internal constant PRICE = 1 ether;
+    uint256 internal constant USDC_PRICE = 100e6;
 
     SeavaultFactory internal factory;
     Seavault internal vault;
@@ -41,18 +42,18 @@ contract SeavaultFulfillForkTest is BaseFork {
         forkBase();
         (keeper, keeperPk) = makeAddrAndKey("keeper");
         nft = new MockERC721();
-        factory = new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        factory = new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner, WETH, USDC);
         // Short trial so the lapse test can warp past it without outliving its order. Irrelevant to
         // the rest of the suite: while the price is zero every vault counts as subscribed.
         vm.prank(factoryOwner);
         factory.setTrialPeriod(1 hours);
         vm.prank(owner);
         vault = factory.createVault(keccak256("fulfill"), keeper);
+        assertTrue(vault.paymentTokenAllowed(WETH));
+        assertEq(IERC20(WETH).allowance(address(vault), OPENSEA_CONDUIT), 0);
         policy = PolicyFixture.Rule(address(nft), PRICE, PRICE);
 
         vm.startPrank(owner);
-        vault.setPaymentTokenAllowed(vault.NATIVE_TOKEN(), true);
-        vault.setPaymentTokenAllowed(WETH, true);
         vault.setPolicyRoot(bytes32(0), PolicyFixture.leaf(policy));
         vault.setConduitApprovalForAll(address(nft), true);
         vault.setConduitAllowance(WETH, type(uint256).max);
@@ -71,6 +72,24 @@ contract SeavaultFulfillForkTest is BaseFork {
 
         assertEq(nft.ownerOf(TOKEN_ID), taker);
         assertEq(address(vault).balance, PRICE);
+    }
+
+    function test_takerFillsVaultUsdcListing() public {
+        Seavault.CollectionWitness[] memory witnesses = _activateUsdcPolicy();
+        nft.mint(address(vault), TOKEN_ID);
+        OrderComponents memory components = _listing(USDC_PRICE);
+        components.consideration[0].itemType = ItemType.ERC20;
+        components.consideration[0].token = USDC;
+        Order memory order = _signed(components, witnesses);
+        deal(USDC, taker, USDC_PRICE);
+
+        vm.startPrank(taker);
+        IERC20(USDC).approve(address(SEAPORT), USDC_PRICE);
+        assertTrue(SEAPORT.fulfillOrder(order, bytes32(0)));
+        vm.stopPrank();
+
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+        assertEq(IERC20(USDC).balanceOf(address(vault)), USDC_PRICE);
     }
 
     function test_keeperReturnsNativeSaleProceedsToSubscribedOwner() public {
@@ -284,6 +303,26 @@ contract SeavaultFulfillForkTest is BaseFork {
         assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
     }
 
+    function test_takerFillsVaultUsdcOffer() public {
+        Seavault.CollectionWitness[] memory witnesses = _activateUsdcPolicy();
+        vm.prank(owner);
+        vault.setConduitAllowance(USDC, USDC_PRICE);
+        deal(USDC, address(vault), USDC_PRICE);
+        nft.mint(taker, TOKEN_ID);
+        OrderComponents memory components = _offer(USDC_PRICE);
+        components.offer[0].token = USDC;
+        Order memory order = _signed(components, witnesses);
+
+        vm.startPrank(taker);
+        nft.setApprovalForAll(address(SEAPORT), true);
+        assertTrue(SEAPORT.fulfillOrder(order, bytes32(0)));
+        vm.stopPrank();
+
+        assertEq(nft.ownerOf(TOKEN_ID), address(vault));
+        assertEq(IERC20(USDC).balanceOf(taker), USDC_PRICE);
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
+    }
+
     /// @dev Signature validation happens at fill time, so rotating the signer kills live orders.
     ///      Rotation also bumps the counter, so Seaport derives a digest the signed components no
     ///      longer hash to.
@@ -342,7 +381,7 @@ contract SeavaultFulfillForkTest is BaseFork {
         vm.prank(seller);
         nft.setApprovalForAll(address(SEAPORT), true);
         vm.deal(address(vault), PRICE);
-        AdvancedOrder memory order = _sellersListing(seller, sellerPk, address(0));
+        AdvancedOrder memory order = _sellersListing(seller, sellerPk, address(0), PRICE);
 
         vm.prank(keeper);
         assertTrue(vault.buy(order, bytes32(0), PolicyFixture.single(policy)));
@@ -358,7 +397,7 @@ contract SeavaultFulfillForkTest is BaseFork {
         vm.prank(seller);
         nft.setApprovalForAll(address(SEAPORT), true);
         vm.deal(address(vault), PRICE);
-        AdvancedOrder memory order = _sellersListing(seller, sellerPk, address(0));
+        AdvancedOrder memory order = _sellersListing(seller, sellerPk, address(0), PRICE);
         vm.prank(factoryOwner);
         factory.setBlocked(address(vault), true);
 
@@ -376,7 +415,7 @@ contract SeavaultFulfillForkTest is BaseFork {
         vm.prank(seller);
         nft.setApprovalForAll(address(SEAPORT), true);
         deal(WETH, address(vault), PRICE);
-        AdvancedOrder memory order = _sellersListing(seller, sellerPk, WETH);
+        AdvancedOrder memory order = _sellersListing(seller, sellerPk, WETH, PRICE);
 
         vm.prank(keeper);
         assertTrue(vault.buy(order, OPENSEA_CONDUIT_KEY, PolicyFixture.single(policy)));
@@ -386,8 +425,38 @@ contract SeavaultFulfillForkTest is BaseFork {
         assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
     }
 
-    /// @dev An ordinary EOA listing of `TOKEN_ID` at `PRICE` in `token` (zero for native ETH).
-    function _sellersListing(address seller, uint256 sellerPk, address token)
+    function test_keeperBuysUsdcListingThroughConduit() public {
+        Seavault.CollectionWitness[] memory witnesses = _activateUsdcPolicy();
+        vm.prank(owner);
+        vault.setConduitAllowance(USDC, USDC_PRICE);
+        deal(USDC, address(vault), USDC_PRICE);
+        (address seller, uint256 sellerPk) = makeAddrAndKey("seller");
+        nft.mint(seller, TOKEN_ID);
+        vm.prank(seller);
+        nft.setApprovalForAll(address(SEAPORT), true);
+        AdvancedOrder memory order = _sellersListing(seller, sellerPk, USDC, USDC_PRICE);
+
+        vm.prank(keeper);
+        assertTrue(vault.buy(order, OPENSEA_CONDUIT_KEY, witnesses));
+
+        assertEq(nft.ownerOf(TOKEN_ID), owner);
+        assertEq(IERC20(USDC).balanceOf(seller), USDC_PRICE);
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
+        assertEq(vault.nativeBuyAllowance(), PRICE);
+    }
+
+    function _activateUsdcPolicy() private returns (Seavault.CollectionWitness[] memory) {
+        PolicyFixture.Rule memory usdcRule =
+            PolicyFixture.Rule(address(nft), USDC_PRICE, USDC_PRICE);
+        bytes32 nativeLeaf = PolicyFixture.leaf(policy);
+        bytes32 usdcLeaf = PolicyFixture.usdcLeaf(usdcRule);
+        vm.prank(owner);
+        vault.setPolicyRoot(nativeLeaf, Hashes.commutativeKeccak256(nativeLeaf, usdcLeaf));
+        return PolicyFixture.withSibling(usdcRule, nativeLeaf);
+    }
+
+    /// @dev An ordinary EOA listing of `TOKEN_ID` at `price` in `token` (zero for native ETH).
+    function _sellersListing(address seller, uint256 sellerPk, address token, uint256 price)
         private
         view
         returns (AdvancedOrder memory)
@@ -403,8 +472,8 @@ contract SeavaultFulfillForkTest is BaseFork {
             token == address(0) ? ItemType.NATIVE : ItemType.ERC20,
             token,
             0,
-            PRICE,
-            PRICE,
+            price,
+            price,
             payable(seller)
         );
 
@@ -471,6 +540,13 @@ contract SeavaultFulfillForkTest is BaseFork {
 
     /// @dev Wraps components into the order Seaport takes, signed the way listoor will sign it.
     function _signed(OrderComponents memory components) private view returns (Order memory) {
+        return _signed(components, PolicyFixture.single(policy));
+    }
+
+    function _signed(
+        OrderComponents memory components,
+        Seavault.CollectionWitness[] memory witnesses
+    ) private view returns (Order memory) {
         (, bytes32 domainSeparator,) = SEAPORT.information();
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(keeperPk, SeaportOrderHash.digest(domainSeparator, components));
@@ -489,9 +565,7 @@ contract SeavaultFulfillForkTest is BaseFork {
                 conduitKey: components.conduitKey,
                 totalOriginalConsiderationItems: components.consideration.length
             }),
-            signature: abi.encode(
-                components, abi.encodePacked(r, s, v), PolicyFixture.single(policy)
-            )
+            signature: abi.encode(components, abi.encodePacked(r, s, v), witnesses)
         });
     }
 }

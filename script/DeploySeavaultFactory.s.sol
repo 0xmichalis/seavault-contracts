@@ -9,7 +9,7 @@ import {ICreateX} from "../src/interfaces/ICreateX.sol";
 
 /// @notice Deploys `SeavaultFactory` through CreateX's CREATE3 factory, so every chain gets the
 ///         same factory address for a given (deployer, salt seed) pair even though each chain's
-///         Seaport and conduit differ.
+///         Seaport, conduit and payment tokens can differ.
 /// @dev CREATE3 derives the address from the salt alone, never from the init code. The salt is
 ///      encoded the way CreateX expects for a permissioned, chain-independent deploy: the first 20
 ///      bytes are the deployer (nobody else can take the address) and the 21st byte is zero (no
@@ -20,17 +20,21 @@ import {ICreateX} from "../src/interfaces/ICreateX.sol";
 ///      becomes the fee admin and the initial fee recipient.
 ///
 ///      Deploy:
+///        FACTORY_SALT_SEED=seavault-factory-v2 \
+///        W_NATIVE=0x4200000000000000000000000000000000000006 \
+///        USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
 ///        forge script script/DeploySeavaultFactory.s.sol --rpc-url base --account deployer \
 ///        --broadcast --verify
 ///
 ///      Predict, without touching a key:
 ///        forge script script/DeploySeavaultFactory.s.sol --sig "predict(address,string)" \
-///        0xDEPLOYER seavault-factory-v1 --rpc-url base
+///        0xDEPLOYER seavault-factory-v2 --rpc-url base
 contract DeploySeavaultFactory is Script {
     ICreateX public constant CREATE_X = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
     address public constant SEAPORT_V1_6 = 0x0000000000000068F116a894984e2DB1123eB395;
     address public constant OPENSEA_CONDUIT = 0x1E0049783F008A0085193E00003D00cd54003c71;
     string public constant DEFAULT_SALT_SEED = "seavault-factory-v1";
+    uint256 private constant CONSTRUCTOR_ARGS_LENGTH = 5 * 32;
 
     struct DeploymentRecord {
         bytes32 transactionHash;
@@ -40,6 +44,8 @@ contract DeploySeavaultFactory is Script {
         address initialOwner;
         address seaport;
         address conduit;
+        address wNative;
+        address usdc;
         SeavaultFactory factory;
         string sourceCommit;
         string saltSeed;
@@ -49,6 +55,8 @@ contract DeploySeavaultFactory is Script {
         address seaport = vm.envOr("SEAPORT", SEAPORT_V1_6);
         address conduit = vm.envOr("CONDUIT", OPENSEA_CONDUIT);
         address owner = vm.envOr("FACTORY_OWNER", msg.sender);
+        address wNative = vm.envAddress("W_NATIVE");
+        address usdc = vm.envOr("USDC", address(0));
         string memory saltSeed = vm.envOr("FACTORY_SALT_SEED", string(DEFAULT_SALT_SEED));
         address deployer = msg.sender;
         address predicted = predict(deployer, saltSeed);
@@ -56,12 +64,16 @@ contract DeploySeavaultFactory is Script {
         console2.log("chain id         ", block.chainid);
         console2.log("deployer         ", deployer);
         console2.log("factory owner    ", owner);
+        console2.log("wrapped native   ", wNative);
+        console2.log("USDC             ", usdc);
         console2.log("salt seed        ", saltSeed);
         console2.log("predicted factory", predicted);
 
         vm.startBroadcast();
         factory = SeavaultFactory(
-            CREATE_X.deployCreate3(saltFor(deployer, saltSeed), initCode(seaport, conduit, owner))
+            CREATE_X.deployCreate3(
+                saltFor(deployer, saltSeed), initCode(seaport, conduit, owner, wNative, usdc)
+            )
         );
         vm.stopBroadcast();
 
@@ -136,13 +148,19 @@ contract DeploySeavaultFactory is Script {
 
         bytes memory creationCode =
             vm.parseJsonBytes(broadcastJson, ".transactions[0].arguments[1]");
-        require(creationCode.length >= 96, "missing constructor arguments");
-        bytes memory constructorArgs = new bytes(96);
-        for (uint256 i; i < 96; ++i) {
-            constructorArgs[i] = creationCode[creationCode.length - 96 + i];
+        require(creationCode.length >= CONSTRUCTOR_ARGS_LENGTH, "missing constructor arguments");
+        bytes memory constructorArgs = new bytes(CONSTRUCTOR_ARGS_LENGTH);
+        uint256 argsStart = creationCode.length - CONSTRUCTOR_ARGS_LENGTH;
+        for (uint256 i; i < CONSTRUCTOR_ARGS_LENGTH; ++i) {
+            constructorArgs[i] = creationCode[argsStart + i];
         }
-        (deployment.seaport, deployment.conduit, deployment.initialOwner) =
-            abi.decode(constructorArgs, (address, address, address));
+        (
+            deployment.seaport,
+            deployment.conduit,
+            deployment.initialOwner,
+            deployment.wNative,
+            deployment.usdc
+        ) = abi.decode(constructorArgs, (address, address, address, address, address));
         require(
             keccak256(vm.parseJsonBytes(broadcastJson, ".transactions[0].transaction.input"))
                 == keccak256(
@@ -151,7 +169,11 @@ contract DeploySeavaultFactory is Script {
                         (
                             salt,
                             initCode(
-                                deployment.seaport, deployment.conduit, deployment.initialOwner
+                                deployment.seaport,
+                                deployment.conduit,
+                                deployment.initialOwner,
+                                deployment.wNative,
+                                deployment.usdc
                             )
                         )
                     )
@@ -162,7 +184,9 @@ contract DeploySeavaultFactory is Script {
         require(address(deployment.factory).code.length != 0, "factory is not deployed");
         require(
             deployment.factory.seaport() == deployment.seaport
-                && deployment.factory.conduit() == deployment.conduit,
+                && deployment.factory.conduit() == deployment.conduit
+                && deployment.factory.wNative() == deployment.wNative
+                && deployment.factory.usdc() == deployment.usdc,
             "factory wiring does not match deployment"
         );
         require(
@@ -186,6 +210,8 @@ contract DeploySeavaultFactory is Script {
         vm.serializeAddress(object, "createX", address(CREATE_X));
         vm.serializeAddress(object, "seaport", deployment.seaport);
         vm.serializeAddress(object, "conduit", deployment.conduit);
+        vm.serializeAddress(object, "wNative", deployment.wNative);
+        vm.serializeAddress(object, "usdc", deployment.usdc);
         vm.serializeAddress(object, "vaultCodeStore", deployment.factory.vaultCodeStore());
         vm.serializeBytes32(object, "factoryRuntimeCodeHash", address(deployment.factory).codehash);
         string memory json = vm.serializeBytes32(
@@ -212,13 +238,15 @@ contract DeploySeavaultFactory is Script {
         return CREATE_X.computeCreate3Address(guardedSaltFor(deployer, saltSeed), address(CREATE_X));
     }
 
-    function initCode(address seaport, address conduit, address owner)
-        public
-        pure
-        returns (bytes memory)
-    {
+    function initCode(
+        address seaport,
+        address conduit,
+        address owner,
+        address wNative,
+        address usdc
+    ) public pure returns (bytes memory) {
         return abi.encodePacked(
-            type(SeavaultFactory).creationCode, abi.encode(seaport, conduit, owner)
+            type(SeavaultFactory).creationCode, abi.encode(seaport, conduit, owner, wNative, usdc)
         );
     }
 

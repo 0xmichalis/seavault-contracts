@@ -21,7 +21,9 @@ contract SeavaultFactorySubscriptionsTest is Test {
     uint256 internal period;
 
     function setUp() public {
-        factory = new SeavaultFactory(makeAddr("seaport"), makeAddr("conduit"), factoryOwner);
+        factory = new SeavaultFactory(
+            makeAddr("seaport"), makeAddr("conduit"), factoryOwner, makeAddr("wNative"), address(0)
+        );
         period = factory.SUBSCRIPTION_PERIOD();
         // `createVault` needs CreateX, which only exists on a fork, so registration is written
         // directly here. Slot is located by probing rather than hardcoded.

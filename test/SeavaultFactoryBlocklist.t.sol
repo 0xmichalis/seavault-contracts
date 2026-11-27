@@ -15,7 +15,9 @@ contract SeavaultFactoryBlocklistTest is Test {
     address internal otherVault = makeAddr("otherVault");
 
     function setUp() public {
-        factory = new SeavaultFactory(makeAddr("seaport"), makeAddr("conduit"), factoryOwner);
+        factory = new SeavaultFactory(
+            makeAddr("seaport"), makeAddr("conduit"), factoryOwner, makeAddr("wNative"), address(0)
+        );
         stdstore.target(address(factory))
             .sig(factory.isVault.selector)
             .with_key(vault)
