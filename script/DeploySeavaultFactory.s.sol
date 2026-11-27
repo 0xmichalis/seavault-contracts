@@ -3,11 +3,11 @@ pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
-import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
+import {Seavault} from "../src/Seavault.sol";
+import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {ICreateX} from "../src/interfaces/ICreateX.sol";
 
-/// @notice Deploys `ListoorVaultFactory` through CreateX's CREATE3 factory, so every chain gets the
+/// @notice Deploys `SeavaultFactory` through CreateX's CREATE3 factory, so every chain gets the
 ///         same factory address for a given (deployer, salt seed) pair even though each chain's
 ///         Seaport and conduit differ.
 /// @dev CREATE3 derives the address from the salt alone, never from the init code. The salt is
@@ -20,17 +20,17 @@ import {ICreateX} from "../src/interfaces/ICreateX.sol";
 ///      becomes the fee admin and the initial fee recipient.
 ///
 ///      Deploy:
-///        forge script script/DeployListoorVaultFactory.s.sol --rpc-url base --account deployer \
+///        forge script script/DeploySeavaultFactory.s.sol --rpc-url base --account deployer \
 ///        --broadcast --verify
 ///
 ///      Predict, without touching a key:
-///        forge script script/DeployListoorVaultFactory.s.sol --sig "predict(address,string)" \
-///        0xDEPLOYER listoor-vault-factory-v1 --rpc-url base
-contract DeployListoorVaultFactory is Script {
+///        forge script script/DeploySeavaultFactory.s.sol --sig "predict(address,string)" \
+///        0xDEPLOYER seavault-factory-v1 --rpc-url base
+contract DeploySeavaultFactory is Script {
     ICreateX public constant CREATE_X = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
     address public constant SEAPORT_V1_6 = 0x0000000000000068F116a894984e2DB1123eB395;
     address public constant OPENSEA_CONDUIT = 0x1E0049783F008A0085193E00003D00cd54003c71;
-    string public constant DEFAULT_SALT_SEED = "listoor-vault-factory-v1";
+    string public constant DEFAULT_SALT_SEED = "seavault-factory-v1";
 
     struct DeploymentRecord {
         bytes32 transactionHash;
@@ -40,12 +40,12 @@ contract DeployListoorVaultFactory is Script {
         address initialOwner;
         address seaport;
         address conduit;
-        ListoorVaultFactory factory;
+        SeavaultFactory factory;
         string sourceCommit;
         string saltSeed;
     }
 
-    function run() external returns (ListoorVaultFactory factory) {
+    function run() external returns (SeavaultFactory factory) {
         address seaport = vm.envOr("SEAPORT", SEAPORT_V1_6);
         address conduit = vm.envOr("CONDUIT", OPENSEA_CONDUIT);
         address owner = vm.envOr("FACTORY_OWNER", msg.sender);
@@ -60,7 +60,7 @@ contract DeployListoorVaultFactory is Script {
         console2.log("predicted factory", predicted);
 
         vm.startBroadcast();
-        factory = ListoorVaultFactory(
+        factory = SeavaultFactory(
             CREATE_X.deployCreate3(saltFor(deployer, saltSeed), initCode(seaport, conduit, owner))
         );
         vm.stopBroadcast();
@@ -77,7 +77,7 @@ contract DeployListoorVaultFactory is Script {
         return record(
             string.concat(
                 vm.projectRoot(),
-                "/broadcast/DeployListoorVaultFactory.s.sol/",
+                "/broadcast/DeploySeavaultFactory.s.sol/",
                 vm.toString(block.chainid),
                 "/run-latest.json"
             )
@@ -158,7 +158,7 @@ contract DeployListoorVaultFactory is Script {
                 ),
             "deployment input does not match current build"
         );
-        deployment.factory = ListoorVaultFactory(predict(deployment.deployer, deployment.saltSeed));
+        deployment.factory = SeavaultFactory(predict(deployment.deployer, deployment.saltSeed));
         require(address(deployment.factory).code.length != 0, "factory is not deployed");
         require(
             deployment.factory.seaport() == deployment.seaport
@@ -167,7 +167,7 @@ contract DeployListoorVaultFactory is Script {
         );
         require(
             deployment.factory.vaultCodeStore().codehash
-                == keccak256(abi.encodePacked(bytes1(0x00), type(ListoorVault).creationCode)),
+                == keccak256(abi.encodePacked(bytes1(0x00), type(Seavault).creationCode)),
             "vault code store does not match current build"
         );
         deployment.sourceCommit = vm.parseJsonString(broadcastJson, ".commit");
@@ -218,7 +218,7 @@ contract DeployListoorVaultFactory is Script {
         returns (bytes memory)
     {
         return abi.encodePacked(
-            type(ListoorVaultFactory).creationCode, abi.encode(seaport, conduit, owner)
+            type(SeavaultFactory).creationCode, abi.encode(seaport, conduit, owner)
         );
     }
 

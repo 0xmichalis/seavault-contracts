@@ -4,13 +4,13 @@ pragma solidity 0.8.28;
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {OrderComponents} from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
+import {Seavault} from "../src/Seavault.sol";
 import {SeaportOrderHash} from "../src/libraries/SeaportOrderHash.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
 /// @notice OpenSea's gasless cancel: the offerer signs `OrderHash(bytes32 orderHash)` under Seaport's
 ///         domain, and the vault vouches for that signature when its keeper made it.
-contract ListoorVaultCancellationTest is VaultTest {
+contract SeavaultCancellationTest is VaultTest {
     bytes4 internal constant MAGIC_VALUE = IERC1271.isValidSignature.selector;
     bytes32 internal constant ORDER_HASH = keccak256("an order");
 
@@ -38,7 +38,7 @@ contract ListoorVaultCancellationTest is VaultTest {
 
     /// @dev Cancelling has to keep working through a lapse, like every other way out.
     function test_vouchesForCancellationsWhileLapsed() public {
-        subscriptions.set(false, 0.01 ether);
+        subscriptions.set(false);
 
         assertEq(validateCancellation(ORDER_HASH, keeperPk), MAGIC_VALUE);
     }
@@ -54,7 +54,7 @@ contract ListoorVaultCancellationTest is VaultTest {
         bytes32 digest = vault.cancellationDigest(ORDER_HASH);
         bytes memory signature = cancellationSignature(ORDER_HASH, attackerPk);
 
-        vm.expectRevert(ListoorVault.UnauthorizedSigner.selector);
+        vm.expectRevert(Seavault.UnauthorizedSigner.selector);
         vault.isValidSignature(digest, signature);
     }
 
@@ -66,12 +66,12 @@ contract ListoorVaultCancellationTest is VaultTest {
         bytes32 orderHash = SeaportOrderHash.hash(order);
         bytes memory asCancellation = cancellationSignature(orderHash, keeperPk);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(keeperPk, vault.cancellationDigest(orderHash));
-        bytes memory asOrder = abi.encode(order, abi.encodePacked(r, s, v));
+        bytes memory asOrder = abi.encode(order, abi.encodePacked(r, s, v), policyWitnesses(order));
 
         vm.expectRevert();
         vault.isValidSignature(orderDigest, asCancellation);
 
-        vm.expectRevert(ListoorVault.UnauthorizedSigner.selector);
+        vm.expectRevert(Seavault.UnauthorizedSigner.selector);
         vault.isValidSignature(orderDigest, asOrder);
     }
 

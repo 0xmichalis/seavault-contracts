@@ -4,18 +4,18 @@ pragma solidity 0.8.28;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {StdStorage, Test, stdStorage} from "forge-std/Test.sol";
 
-import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
+import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 
-contract ListoorVaultFactoryBlocklistTest is Test {
+contract SeavaultFactoryBlocklistTest is Test {
     using stdStorage for StdStorage;
 
-    ListoorVaultFactory internal factory;
+    SeavaultFactory internal factory;
     address internal factoryOwner = makeAddr("factoryOwner");
     address internal vault = makeAddr("vault");
     address internal otherVault = makeAddr("otherVault");
 
     function setUp() public {
-        factory = new ListoorVaultFactory(makeAddr("seaport"), makeAddr("conduit"), factoryOwner);
+        factory = new SeavaultFactory(makeAddr("seaport"), makeAddr("conduit"), factoryOwner);
         stdstore.target(address(factory))
             .sig(factory.isVault.selector)
             .with_key(vault)
@@ -34,13 +34,13 @@ contract ListoorVaultFactoryBlocklistTest is Test {
     function test_ownerBlocksAndUnblocksOneVault() public {
         vm.startPrank(factoryOwner);
         vm.expectEmit(true, false, false, true);
-        emit ListoorVaultFactory.VaultBlockStatusUpdated(vault, true);
+        emit SeavaultFactory.VaultBlockStatusUpdated(vault, true);
         factory.setBlocked(vault, true);
         assertTrue(factory.isBlocked(vault));
         assertFalse(factory.isBlocked(otherVault));
 
         vm.expectEmit(true, false, false, true);
-        emit ListoorVaultFactory.VaultBlockStatusUpdated(vault, false);
+        emit SeavaultFactory.VaultBlockStatusUpdated(vault, false);
         factory.setBlocked(vault, false);
         assertFalse(factory.isBlocked(vault));
         vm.stopPrank();
@@ -64,9 +64,9 @@ contract ListoorVaultFactoryBlocklistTest is Test {
     function test_rejectsUnregisteredVaults() public {
         address unknown = makeAddr("unknown");
         vm.startPrank(factoryOwner);
-        vm.expectRevert(abi.encodeWithSelector(ListoorVaultFactory.NotAVault.selector, unknown));
+        vm.expectRevert(abi.encodeWithSelector(SeavaultFactory.NotAVault.selector, unknown));
         factory.setBlocked(unknown, true);
-        vm.expectRevert(abi.encodeWithSelector(ListoorVaultFactory.NotAVault.selector, unknown));
+        vm.expectRevert(abi.encodeWithSelector(SeavaultFactory.NotAVault.selector, unknown));
         factory.setBlocked(unknown, false);
         vm.stopPrank();
     }

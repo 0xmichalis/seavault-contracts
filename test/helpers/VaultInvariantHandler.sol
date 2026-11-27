@@ -19,11 +19,12 @@ import {
     OrderParameters
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ListoorVault} from "../../src/ListoorVault.sol";
-import {ListoorVaultFactory} from "../../src/ListoorVaultFactory.sol";
+import {Seavault} from "../../src/Seavault.sol";
+import {SeavaultFactory} from "../../src/SeavaultFactory.sol";
 import {IWETH} from "../../src/interfaces/IWETH.sol";
 import {SeaportOrderHash} from "../../src/libraries/SeaportOrderHash.sol";
 import {MockERC1155, MockERC721} from "../mocks/TokenMocks.sol";
+import {PolicyFixture} from "./PolicyFixture.sol";
 
 contract InvariantOwner is ERC1155Holder {
     receive() external payable {}
@@ -31,11 +32,11 @@ contract InvariantOwner is ERC1155Holder {
 
 /// @dev A hostile seller accepts its own orders and attempts a vault withdrawal during settlement.
 contract InvariantTaker is ERC1155Holder, IERC1271 {
-    ListoorVault private immutable vault;
+    Seavault private immutable vault;
     uint256 public callbackAttempts;
     bool public stoleDuringCallback;
 
-    constructor(ListoorVault vault_) {
+    constructor(Seavault vault_) {
         vault = vault_;
     }
 
@@ -59,7 +60,7 @@ contract InvariantTaker is ERC1155Holder, IERC1271 {
     function _attack() private {
         ++callbackAttempts;
         (bool success,) =
-            address(vault).call(abi.encodeCall(ListoorVault.withdrawETH, (address(this), 1)));
+            address(vault).call(abi.encodeCall(Seavault.withdrawETH, (address(this), 1)));
         stoleDuringCallback = stoleDuringCallback || success;
     }
 }
@@ -84,8 +85,8 @@ contract VaultInvariantHandler is Test {
     ConsiderationInterface public immutable seaport;
     address public immutable conduit;
     bytes32 private immutable conduitKey;
-    ListoorVaultFactory public immutable factory;
-    ListoorVault public immutable vault;
+    SeavaultFactory public immutable factory;
+    Seavault public immutable vault;
     MockERC721 public immutable nft;
     MockERC1155 public immutable edition;
     InvariantTaker public immutable taker;
@@ -105,6 +106,8 @@ contract VaultInvariantHandler is Test {
     uint256 private ownerIndex;
     uint256 private keeperIndex;
     uint256 private salt;
+    PolicyFixture.Rule private nftPolicy;
+    PolicyFixture.Rule private editionPolicy;
 
     struct PostedOrder {
         bytes encodedOrder;
@@ -130,19 +133,18 @@ contract VaultInvariantHandler is Test {
         owners[1] = address(new InvariantOwner());
         nft = new MockERC721();
         edition = new MockERC1155();
-        factory = new ListoorVaultFactory(address(seaport_), conduit_, address(this));
+        factory = new SeavaultFactory(address(seaport_), conduit_, address(this));
         factory.setTrialPeriod(1 hours);
         vm.prank(owners[0]);
         vault = factory.createVault(keccak256("invariants"), _keeper());
         taker = new InvariantTaker(vault);
+        nftPolicy = PolicyFixture.Rule(address(nft), UNIT, UNIT);
+        editionPolicy = PolicyFixture.Rule(address(edition), UNIT, UNIT);
 
         vm.startPrank(owners[0]);
         vault.setPaymentTokenAllowed(address(0), true);
         vault.setPaymentTokenAllowed(WETH, true);
-        vault.setListingFloor(address(nft), UNIT);
-        vault.setListingFloor(address(edition), UNIT);
-        vault.setOfferCeiling(address(nft), UNIT);
-        vault.setOfferCeiling(address(edition), UNIT);
+        vault.setPolicyRoot(bytes32(0), PolicyFixture.root(nftPolicy, editionPolicy));
         vault.setConduitApprovalForAll(address(nft), true);
         vault.setConduitApprovalForAll(address(edition), true);
         vault.setConduitAllowance(WETH, expectedWethAllowance);
@@ -300,7 +302,8 @@ contract VaultInvariantHandler is Test {
         PostedOrder storage posted = orders[seed % orders.length];
         OrderComponents[] memory toCancel = new OrderComponents[](1);
         Order memory order = abi.decode(posted.encodedOrder, (Order));
-        (toCancel[0],) = abi.decode(order.signature, (OrderComponents, bytes));
+        (toCancel[0],,) =
+            abi.decode(order.signature, (OrderComponents, bytes, Seavault.CollectionWitness[]));
         vm.prank(_keeper());
         assertTrue(vault.cancelOrders(toCancel));
         posted.cancelled = true;
@@ -338,8 +341,15 @@ contract VaultInvariantHandler is Test {
         }
         AdvancedOrder memory order = AdvancedOrder(_parameters(components), 1, denominator, "", "");
         uint256 beforeEditions = edition.balanceOf(owners[ownerIndex], EDITION_ID);
-        (success,) =
-            _invoke(_keeper(), address(vault), abi.encodeCall(vault.buy, (order, conduitKey)), 0);
+        bytes memory buyCall = abi.encodeCall(
+            vault.buy,
+            (
+                order,
+                conduitKey,
+                PolicyFixture.forOfferItems(nftPolicy, editionPolicy, components.offer)
+            )
+        );
+        (success,) = _invoke(_keeper(), address(vault), buyCall, 0);
         if (success) {
             uint256 value = (price + fee + denominator - 1) / denominator;
             if (useWeth) expectedWethAllowance -= value;
@@ -392,11 +402,15 @@ contract VaultInvariantHandler is Test {
         uint256 minimum = ceiling == UNIT ? UNIT / 4 : UNIT;
         uint256 floor = bound(seed >> 8, minimum, 2 * UNIT);
         uint256 overrideFloor = seed & 32 == 0 ? 0 : floor;
+        nftPolicy.floor = floor;
+        editionPolicy.floor = floor;
+        nftPolicy.ceiling = ceiling;
+        editionPolicy.ceiling = ceiling;
+        bytes32 previous = vault.policyRoot();
+        bytes32 next = PolicyFixture.root(nftPolicy, editionPolicy);
         vm.startPrank(owners[ownerIndex]);
-        vault.setOfferCeiling(address(nft), ceiling);
-        vault.setOfferCeiling(address(edition), ceiling);
-        vault.setListingFloor(address(nft), floor);
-        vault.setListingFloor(address(edition), floor);
+        vault.setPolicyRoot(previous, next);
+        if (previous != next) ++generation;
         vault.setTokenListingFloor(address(nft), seed % NFT_COUNT, overrideFloor);
         // Clear old per-token overrides when lowering the ceiling below the valuation.
         if (ceiling < UNIT) {
@@ -513,9 +527,9 @@ contract VaultInvariantHandler is Test {
         } else if (action == 5) {
             data = abi.encodeCall(vault.setConduitApprovalForAll, (address(nft), true));
         } else if (action == 6) {
-            data = abi.encodeCall(vault.setListingFloor, (address(nft), 0));
+            data = abi.encodeCall(vault.setPolicyRoot, (vault.policyRoot(), bytes32(0)));
         } else if (action == 7) {
-            data = abi.encodeCall(vault.setOfferCeiling, (address(nft), type(uint256).max));
+            data = abi.encodeCall(vault.setTokenListingFloor, (address(nft), seed % NFT_COUNT, 1));
         } else if (action == 8) {
             data = abi.encodeCall(vault.setKeeper, (address(taker)));
         } else if (action == 9) {
@@ -523,7 +537,8 @@ contract VaultInvariantHandler is Test {
         } else if (action == 10) {
             data = abi.encodeCall(vault.setAutoWithdrawEnabled, (true));
         } else if (action == 11) {
-            data = abi.encodeCall(vault.renewSubscription, (1, type(uint256).max));
+            data =
+                abi.encodeWithSignature("renewSubscription(uint256,uint256)", 1, type(uint256).max);
         } else if (action == 12) {
             data = abi.encodeCall(vault.wrapETH, (WETH, 1));
         } else if (action == 13) {
@@ -671,7 +686,14 @@ contract VaultInvariantHandler is Test {
         (, bytes32 separator,) = seaport.information();
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(key, SeaportOrderHash.digest(separator, components));
-        return Order(_parameters(components), abi.encode(components, abi.encodePacked(r, s, v)));
+        return Order(
+            _parameters(components),
+            abi.encode(
+                components,
+                abi.encodePacked(r, s, v),
+                PolicyFixture.forOrder(nftPolicy, editionPolicy, components)
+            )
+        );
     }
 
     function _parameters(OrderComponents memory c) private pure returns (OrderParameters memory) {

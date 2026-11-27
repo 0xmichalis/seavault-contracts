@@ -4,16 +4,16 @@ pragma solidity 0.8.28;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {StdStorage, Test, stdStorage} from "forge-std/Test.sol";
 
-import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
+import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 
 /// @notice The factory's subscription registry: pricing, overrides, extension arithmetic, and the
 ///         promise that paid time can only grow. Needs no fork — nothing here deploys a vault.
-contract ListoorVaultFactorySubscriptionsTest is Test {
+contract SeavaultFactorySubscriptionsTest is Test {
     using stdStorage for StdStorage;
 
     uint256 internal constant PRICE = 0.05 ether;
 
-    ListoorVaultFactory internal factory;
+    SeavaultFactory internal factory;
     address internal factoryOwner = makeAddr("factoryOwner");
     address internal recipient = makeAddr("recipient");
     address internal payer = makeAddr("payer");
@@ -21,7 +21,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
     uint256 internal period;
 
     function setUp() public {
-        factory = new ListoorVaultFactory(makeAddr("seaport"), makeAddr("conduit"), factoryOwner);
+        factory = new SeavaultFactory(makeAddr("seaport"), makeAddr("conduit"), factoryOwner);
         period = factory.SUBSCRIPTION_PERIOD();
         // `createVault` needs CreateX, which only exists on a fork, so registration is written
         // directly here. Slot is located by probing rather than hardcoded.
@@ -61,7 +61,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
 
     function test_setSubscription() public {
         vm.expectEmit(true, true, true, true);
-        emit ListoorVaultFactory.SubscriptionUpdated(recipient, PRICE);
+        emit SeavaultFactory.SubscriptionUpdated(recipient, PRICE);
         vm.prank(factoryOwner);
         factory.setSubscription(recipient, PRICE);
 
@@ -72,7 +72,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
     }
 
     function test_rejectsZeroRecipient() public {
-        vm.expectRevert(ListoorVaultFactory.ZeroAddress.selector);
+        vm.expectRevert(SeavaultFactory.ZeroAddress.selector);
         vm.prank(factoryOwner);
         factory.setSubscription(address(0), PRICE);
     }
@@ -94,7 +94,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
     /// @dev Renouncing would freeze the price and the recipient; a recipient that stops accepting
     ///      payments would then lapse every vault for good.
     function test_ownershipCannotBeRenounced() public {
-        vm.expectRevert(ListoorVaultFactory.OwnershipCannotBeRenounced.selector);
+        vm.expectRevert(SeavaultFactory.OwnershipCannotBeRenounced.selector);
         vm.prank(factoryOwner);
         factory.renounceOwnership();
 
@@ -110,7 +110,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
         vm.warp(block.timestamp + 10 days);
 
         vm.expectEmit(true, true, true, true);
-        emit ListoorVaultFactory.SubscriptionExtended(vault, payer, 2, block.timestamp + 2 * period);
+        emit SeavaultFactory.SubscriptionExtended(vault, payer, 2, block.timestamp + 2 * period);
         vm.prank(payer);
         factory.extendSubscription{value: 2 * PRICE}(vault, 2);
 
@@ -148,18 +148,18 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
 
         vm.startPrank(payer);
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVaultFactory.IncorrectPayment.selector, PRICE, PRICE - 1)
+            abi.encodeWithSelector(SeavaultFactory.IncorrectPayment.selector, PRICE, PRICE - 1)
         );
         factory.extendSubscription{value: PRICE - 1}(vault, 1);
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ListoorVaultFactory.IncorrectPayment.selector, 2 * PRICE, 2 * PRICE + 1
+                SeavaultFactory.IncorrectPayment.selector, 2 * PRICE, 2 * PRICE + 1
             )
         );
         factory.extendSubscription{value: 2 * PRICE + 1}(vault, 2);
 
-        vm.expectRevert(ListoorVaultFactory.NoPeriods.selector);
+        vm.expectRevert(SeavaultFactory.NoPeriods.selector);
         factory.extendSubscription{value: 0}(vault, 0);
         vm.stopPrank();
     }
@@ -168,7 +168,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
         _priced();
 
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVaultFactory.NotAVault.selector, makeAddr("random"))
+            abi.encodeWithSelector(SeavaultFactory.NotAVault.selector, makeAddr("random"))
         );
         vm.prank(payer);
         factory.extendSubscription{value: PRICE}(makeAddr("random"), 1);
@@ -177,7 +177,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
     /// @dev No taking money for something that is already free.
     function test_rejectsPaymentWhenFree() public {
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVaultFactory.SubscriptionNotRequired.selector, vault)
+            abi.encodeWithSelector(SeavaultFactory.SubscriptionNotRequired.selector, vault)
         );
         vm.prank(payer);
         factory.extendSubscription{value: 0}(vault, 1);
@@ -226,7 +226,7 @@ contract ListoorVaultFactorySubscriptionsTest is Test {
         _priced();
 
         vm.expectEmit(true, true, true, true);
-        emit ListoorVaultFactory.PriceOverrideUpdated(vault, true, 0);
+        emit SeavaultFactory.PriceOverrideUpdated(vault, true, 0);
         vm.prank(factoryOwner);
         factory.setPriceOverride(vault, true, 0);
 

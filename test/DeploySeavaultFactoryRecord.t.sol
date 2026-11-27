@@ -3,11 +3,11 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 
-import {DeployListoorVaultFactory} from "../script/DeployListoorVaultFactory.s.sol";
-import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
+import {DeploySeavaultFactory} from "../script/DeploySeavaultFactory.s.sol";
+import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {ICreateX} from "../src/interfaces/ICreateX.sol";
 
-contract DeploymentRecorder is DeployListoorVaultFactory {
+contract DeploymentRecorder is DeploySeavaultFactory {
     string public recordedJson;
 
     function recordJson(string memory broadcastJson, string memory saltSeed)
@@ -23,14 +23,14 @@ contract DeploymentRecorder is DeployListoorVaultFactory {
     }
 }
 
-contract DeployListoorVaultFactoryRecordTest is Test {
+contract DeploySeavaultFactoryRecordTest is Test {
     DeploymentRecorder internal recorder;
-    ListoorVaultFactory internal factory;
+    SeavaultFactory internal factory;
     address internal deployer = address(0xdE10);
     address internal initialOwner = address(0xad);
     bytes32 internal transactionHash = keccak256("deployment transaction");
     bytes32 internal deploymentBlockHash = keccak256("deployment block");
-    string internal seed = "listoor-vault-factory-v1";
+    string internal seed;
     string internal transactionJson;
     string internal broadcastJson;
     bytes32 internal salt;
@@ -40,9 +40,9 @@ contract DeployListoorVaultFactoryRecordTest is Test {
         vm.chainId(31_337);
         vm.roll(100);
         recorder = new DeploymentRecorder();
-        factory = new ListoorVaultFactory(
-            recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner
-        );
+        seed = recorder.DEFAULT_SALT_SEED();
+        factory =
+            new SeavaultFactory(recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner);
         vm.etch(address(recorder.CREATE_X()), hex"00");
         vm.mockCall(
             address(recorder.CREATE_X()),

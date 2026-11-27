@@ -1,36 +1,36 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {DeployListoorVaultFactory} from "../script/DeployListoorVaultFactory.s.sol";
-import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
+import {DeploySeavaultFactory} from "../script/DeploySeavaultFactory.s.sol";
+import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {ICreateX} from "../src/interfaces/ICreateX.sol";
 import {BaseFork} from "./helpers/BaseFork.sol";
 
 /// @notice Factory deployment determinism against the real CreateX factory. Vault addresses derive
 ///         from the factory address, so this is what makes them match across chains.
-contract DeployListoorVaultFactoryForkTest is BaseFork {
-    string internal constant SEED = "listoor-vault-factory-test";
-
-    DeployListoorVaultFactory internal deployScript;
+contract DeploySeavaultFactoryForkTest is BaseFork {
+    DeploySeavaultFactory internal deployScript;
     ICreateX internal createX;
+    string internal seed;
     address internal deployer = makeAddr("deployer");
     address internal factoryOwner = makeAddr("factoryOwner");
 
     function setUp() public {
         forkBase();
-        deployScript = new DeployListoorVaultFactory();
+        deployScript = new DeploySeavaultFactory();
         createX = deployScript.CREATE_X();
+        seed = deployScript.DEFAULT_SALT_SEED();
     }
 
     function test_deploysAtPredictedAddress() public {
-        address predicted = deployScript.predict(deployer, SEED);
+        address predicted = deployScript.predict(deployer, seed);
 
         address factory = _deploy(deployer, address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
 
         assertEq(factory, predicted);
-        assertEq(ListoorVaultFactory(factory).seaport(), address(SEAPORT));
-        assertEq(ListoorVaultFactory(factory).conduit(), OPENSEA_CONDUIT);
-        assertEq(ListoorVaultFactory(factory).owner(), factoryOwner);
+        assertEq(SeavaultFactory(factory).seaport(), address(SEAPORT));
+        assertEq(SeavaultFactory(factory).conduit(), OPENSEA_CONDUIT);
+        assertEq(SeavaultFactory(factory).owner(), factoryOwner);
     }
 
     /// @dev The whole point of CREATE3: chain and constructor arguments do not move the address, so
@@ -48,13 +48,13 @@ contract DeployListoorVaultFactoryForkTest is BaseFork {
     }
 
     function test_saltSeedChangesTheAddress() public view {
-        assertTrue(deployScript.predict(deployer, SEED) != deployScript.predict(deployer, "other"));
+        assertTrue(deployScript.predict(deployer, seed) != deployScript.predict(deployer, "other"));
     }
 
     /// @dev Permissioned salt: another sender reusing our salt lands somewhere else, so the address
     ///      cannot be squatted on a chain we have not deployed to yet.
     function test_strangerCannotOccupyTheAddress() public {
-        address predicted = deployScript.predict(deployer, SEED);
+        address predicted = deployScript.predict(deployer, seed);
 
         address squatted =
             _deploy(makeAddr("stranger"), address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
@@ -64,7 +64,7 @@ contract DeployListoorVaultFactoryForkTest is BaseFork {
     }
 
     function test_saltEncodesDeployerAndDisablesChainProtection() public view {
-        bytes32 salt = deployScript.saltFor(deployer, SEED);
+        bytes32 salt = deployScript.saltFor(deployer, seed);
 
         // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(address(bytes20(salt)), deployer);
@@ -76,7 +76,7 @@ contract DeployListoorVaultFactoryForkTest is BaseFork {
         private
         returns (address)
     {
-        bytes32 salt = deployScript.saltFor(deployer, SEED);
+        bytes32 salt = deployScript.saltFor(deployer, seed);
         bytes memory initCode = deployScript.initCode(seaport, conduit, owner);
 
         vm.prank(from);

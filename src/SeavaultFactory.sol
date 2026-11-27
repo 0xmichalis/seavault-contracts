@@ -7,15 +7,15 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
-import {ListoorVault} from "./ListoorVault.sol";
+import {Seavault} from "./Seavault.sol";
 import {ICreateX} from "./interfaces/ICreateX.sol";
 import {ISubscriptionRegistry} from "./interfaces/ISubscriptionRegistry.sol";
 import {IVaultOwnershipRegistry} from "./interfaces/IVaultOwnershipRegistry.sol";
 import {CodeStore} from "./libraries/CodeStore.sol";
 
-/// @title ListoorVaultFactory
+/// @title SeavaultFactory
 /// @custom:security-contact security@kazani.ch
-/// @notice Deploys `ListoorVault` instances and keeps a registry of them, so an owner can get a vault
+/// @notice Deploys `Seavault` instances and keeps a registry of them, so an owner can get a vault
 ///         in one transaction and the keeper can look the vault up on-chain instead of being configured
 ///         with an address per chain.
 /// @dev Vaults are real deployments, not proxies: the vault keeps its immutable Seaport wiring and
@@ -31,15 +31,14 @@ import {CodeStore} from "./libraries/CodeStore.sol";
 ///      CreateX for a permissioned, chain-independent deploy: no other caller can occupy a vault
 ///      address before its owner claims it, on this chain or any other.
 ///
-///      The factory doubles as the subscription registry its vaults check before buying. Vaults are
+///      The factory doubles as the managed keeper's subscription registry. Vaults are
 ///      created with a trial period; after that, someone has to buy periods for full keeper access.
-///      The keeper enforces free-tier listing and offer limits offchain. Paid time can only be
-///      extended, never revoked. The factory owner can separately block trading and automatic
-///      withdrawals for individual vaults, including paid ones. Neither a lapse nor a block touches
-///      custody: the vault owner keeps manual withdrawals, cancels and other policy throughout.
+///      The keeper enforces free-tier limits and the factory blocklist offchain. Paid time
+///      can only be extended. The factory owner can suspend service for individual vaults,
+///      including paid ones.
 ///
 ///      A per-vault price override prices individual vaults off-schedule, zero making one free.
-contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnershipRegistry {
+contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnershipRegistry {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     ICreateX public constant CREATE_X = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
@@ -83,7 +82,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
     mapping(address owner => address vault) public ownedVaultOf;
     mapping(address pendingOwner => EnumerableSet.AddressSet vaults) private _pendingVaults;
 
-    /// @notice Blocks order validation, direct buys and automatic withdrawals regardless of paid time.
+    /// @inheritdoc ISubscriptionRegistry
     mapping(address vault => bool blocked) public override isBlocked;
 
     /// @notice Where the vault's creation code is kept; `CodeStore.read` returns it verbatim.
@@ -120,7 +119,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
         if (seaport_ == address(0) || conduit_ == address(0)) revert ZeroAddress();
         seaport = seaport_;
         conduit = conduit_;
-        vaultCodeStore = CodeStore.write(type(ListoorVault).creationCode);
+        vaultCodeStore = CodeStore.write(type(Seavault).creationCode);
         subscriptionRecipient = owner_;
         trialPeriod = DEFAULT_TRIAL_PERIOD;
         emit SubscriptionUpdated(owner_, 0);
@@ -134,16 +133,12 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
     /// @dev Any native value is deposited into the new vault in this same transaction.
     /// @dev Inputs are checked here rather than left to the vault's constructor, because CreateX
     ///      replaces a failed construction with its own opaque `FailedContractCreation`.
-    function createVault(bytes32 salt, address keeper)
-        external
-        payable
-        returns (ListoorVault vault)
-    {
+    function createVault(bytes32 salt, address keeper) external payable returns (Seavault vault) {
         if (keeper == address(0)) revert ZeroAddress();
         if (vaultOf[msg.sender][salt] != address(0)) revert VaultAlreadyExists(salt);
         if (ownedVaultOf[msg.sender] != address(0)) revert VaultAlreadyOwned(msg.sender);
 
-        vault = ListoorVault(
+        vault = Seavault(
             payable(CREATE_X.deployCreate3(
                     _createXSalt(msg.sender, salt),
                     abi.encodePacked(
@@ -189,7 +184,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
     /// @inheritdoc IVaultOwnershipRegistry
     function syncVaultOwnership(address previousOwner, address previousPendingOwner) external {
         if (!isVault[msg.sender]) revert NotAVault(msg.sender);
-        ListoorVault vault = ListoorVault(payable(msg.sender));
+        Seavault vault = Seavault(payable(msg.sender));
         address currentOwner = vault.owner();
         address currentPendingOwner = vault.pendingOwner();
         if (previousOwner != currentOwner) {
@@ -211,9 +206,7 @@ contract ListoorVaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwner
                               SUBSCRIPTIONS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Blocks or unblocks a registered vault's trading and automatic withdrawals.
-    /// @dev Does not revoke orders Seaport already validated; those need cancellation or a counter
-    ///      bump. Owner withdrawals, cancellations and other owner-set policy remain available.
+    /// @notice Sets whether the managed keeper skips a registered vault.
     function setBlocked(address vault, bool blocked) external onlyOwner {
         if (!isVault[vault]) revert NotAVault(vault);
         isBlocked[vault] = blocked;

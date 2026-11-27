@@ -4,19 +4,19 @@ pragma solidity 0.8.28;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {OrderComponents} from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
+import {Seavault} from "../src/Seavault.sol";
 import {SeaportOrderHash} from "../src/libraries/SeaportOrderHash.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 import {MockSeaport} from "./mocks/MockSeaport.sol";
 
 /// @notice Deployment, access control, and the plumbing the owner and the keeper key operate.
-contract ListoorVaultAdminTest is VaultTest {
+contract SeavaultAdminTest is VaultTest {
     function test_deploymentWiring() public view {
         assertEq(address(vault.seaport()), address(seaport));
         assertEq(vault.conduit(), conduit);
         assertEq(vault.owner(), owner);
         assertEq(vault.keeper(), keeper);
-        assertEq(address(vault.subscriptions()), address(subscriptions));
+        assertEq(address(vault.factory()), address(subscriptions));
         assertEq(vault.maxOrderDuration(), 30 days);
         assertEq(vault.maxFeeBps(), 1000);
 
@@ -30,29 +30,29 @@ contract ListoorVaultAdminTest is VaultTest {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ListoorVault.SeaportDomainMismatch.selector,
+                Seavault.SeaportDomainMismatch.selector,
                 SeaportOrderHash.domainSeparator(address(impostor), keccak256("1.6")),
                 keccak256("not seaport")
             )
         );
-        new ListoorVault(address(impostor), conduit, owner, keeper, address(subscriptions));
+        new Seavault(address(impostor), conduit, owner, keeper, address(subscriptions));
     }
 
     function test_rejectsZeroAddressesAtDeployment() public {
-        vm.expectRevert(ListoorVault.ZeroAddress.selector);
-        new ListoorVault(address(0), conduit, owner, keeper, address(subscriptions));
+        vm.expectRevert(Seavault.ZeroAddress.selector);
+        new Seavault(address(0), conduit, owner, keeper, address(subscriptions));
 
-        vm.expectRevert(ListoorVault.ZeroAddress.selector);
-        new ListoorVault(address(seaport), address(0), owner, keeper, address(subscriptions));
+        vm.expectRevert(Seavault.ZeroAddress.selector);
+        new Seavault(address(seaport), address(0), owner, keeper, address(subscriptions));
 
-        vm.expectRevert(ListoorVault.ZeroAddress.selector);
-        new ListoorVault(address(seaport), conduit, owner, address(0), address(subscriptions));
+        vm.expectRevert(Seavault.ZeroAddress.selector);
+        new Seavault(address(seaport), conduit, owner, address(0), address(subscriptions));
 
-        vm.expectRevert(ListoorVault.ZeroAddress.selector);
-        new ListoorVault(address(seaport), conduit, owner, keeper, address(0));
+        vm.expectRevert(Seavault.ZeroAddress.selector);
+        new Seavault(address(seaport), conduit, owner, keeper, address(0));
 
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-        new ListoorVault(address(seaport), conduit, address(0), keeper, address(subscriptions));
+        new Seavault(address(seaport), conduit, address(0), keeper, address(subscriptions));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -63,7 +63,7 @@ contract ListoorVaultAdminTest is VaultTest {
         address newKeeper = makeAddr("newKeeper");
 
         vm.expectEmit(true, true, true, true);
-        emit ListoorVault.KeeperUpdated(newKeeper);
+        emit Seavault.KeeperUpdated(newKeeper);
         vm.prank(owner);
         vault.setKeeper(newKeeper);
 
@@ -71,7 +71,7 @@ contract ListoorVaultAdminTest is VaultTest {
     }
 
     function test_rejectsZeroKeeper() public {
-        vm.expectRevert(ListoorVault.ZeroAddress.selector);
+        vm.expectRevert(Seavault.ZeroAddress.selector);
         vm.prank(owner);
         vault.setKeeper(address(0));
     }
@@ -79,33 +79,31 @@ contract ListoorVaultAdminTest is VaultTest {
     /// @dev Seaport skips the vault for orders it has already validated or partially filled, so
     ///      rotation bumps the counter to revoke those too.
     function test_setKeeperIncrementsSeaportCounter() public {
+        uint256 counterBefore = seaport.getCounter(address(vault));
         vm.prank(owner);
         vault.setKeeper(makeAddr("newKeeper"));
 
-        assertEq(seaport.getCounter(address(vault)), 1);
+        assertEq(seaport.getCounter(address(vault)), counterBefore + 1);
     }
 
     function test_setPolicy() public {
+        setNftPolicy(5 ether, 3 ether);
         vm.startPrank(owner);
-        vault.setListingFloor(address(nft), 5 ether);
         vault.setTokenListingFloor(address(nft), TOKEN_ID, 9 ether);
-        vault.setOfferCeiling(address(nft), 3 ether);
         vault.setPaymentTokenAllowed(address(0xbeef), true);
         vault.setMaxOrderDuration(1 days);
         vault.setMaxFeeBps(2500);
         vm.stopPrank();
 
-        assertEq(vault.listingFloor(address(nft)), 5 ether);
+        assertEq(vault.policyRoot(), collectionPolicyRoot());
         assertEq(vault.tokenListingFloor(address(nft), TOKEN_ID), 9 ether);
-        assertEq(vault.listingFloorFor(address(nft), TOKEN_ID), 9 ether);
-        assertEq(vault.offerCeiling(address(nft)), 3 ether);
         assertTrue(vault.paymentTokenAllowed(address(0xbeef)));
         assertEq(vault.maxOrderDuration(), 1 days);
         assertEq(vault.maxFeeBps(), 2500);
     }
 
     function test_rejectsFeeCapAboveOneHundredPercent() public {
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.InvalidFeeBps.selector, 10_001));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.InvalidFeeBps.selector, 10_001));
         vm.prank(owner);
         vault.setMaxFeeBps(10_001);
     }
@@ -115,11 +113,9 @@ contract ListoorVaultAdminTest is VaultTest {
         _expectUnauthorized();
         vault.setKeeper(keeper);
         _expectUnauthorized();
-        vault.setListingFloor(address(nft), 1);
+        vault.setPolicyRoot(bytes32(0), bytes32(uint256(1)));
         _expectUnauthorized();
         vault.setTokenListingFloor(address(nft), TOKEN_ID, 1);
-        _expectUnauthorized();
-        vault.setOfferCeiling(address(nft), 1);
         _expectUnauthorized();
         vault.setPaymentTokenAllowed(address(weth), false);
         _expectUnauthorized();
@@ -187,15 +183,17 @@ contract ListoorVaultAdminTest is VaultTest {
         OrderComponents[] memory orders = new OrderComponents[](1);
         orders[0] = listing(FLOOR);
 
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.NotOwnerOrKeeper.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.NotOwnerOrKeeper.selector, stranger));
         vm.prank(stranger);
         vault.cancelOrders(orders);
     }
 
     function test_incrementCounterForwardsToSeaport() public {
+        uint256 counterBefore = seaport.getCounter(address(vault));
+        uint256 callsBefore = seaport.incrementCounterCalls();
         vm.prank(owner);
-        assertEq(vault.incrementCounter(), 1);
-        assertEq(seaport.incrementCounterCalls(), 1);
+        assertEq(vault.incrementCounter(), counterBefore + 1);
+        assertEq(seaport.incrementCounterCalls(), callsBefore + 1);
     }
 
     function test_wrapAndUnwrap() public {
@@ -216,7 +214,7 @@ contract ListoorVaultAdminTest is VaultTest {
         vm.deal(address(vault), 1 ether);
 
         vm.expectRevert(
-            abi.encodeWithSelector(ListoorVault.PaymentTokenNotAllowed.selector, address(0xbeef))
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0xbeef))
         );
         vm.prank(keeper);
         vault.wrapETH(address(0xbeef), 1 ether);
@@ -225,7 +223,7 @@ contract ListoorVaultAdminTest is VaultTest {
     function test_wrapRejectsStrangers() public {
         vm.deal(address(vault), 1 ether);
 
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.NotOwnerOrKeeper.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.NotOwnerOrKeeper.selector, stranger));
         vm.prank(stranger);
         vault.wrapETH(address(weth), 1 ether);
     }
@@ -302,7 +300,7 @@ contract ListoorVaultAdminTest is VaultTest {
 
     /// @dev Renouncing would lock the assets in and the keeper in place forever.
     function test_ownershipCannotBeRenounced() public {
-        vm.expectRevert(ListoorVault.OwnershipCannotBeRenounced.selector);
+        vm.expectRevert(Seavault.OwnershipCannotBeRenounced.selector);
         vm.prank(owner);
         vault.renounceOwnership();
 

@@ -12,46 +12,48 @@ import {
     OrderParameters
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
-import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
+import {Seavault} from "../src/Seavault.sol";
+import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {SeaportOrderHash} from "../src/libraries/SeaportOrderHash.sol";
 import {BaseFork} from "./helpers/BaseFork.sol";
+import {PolicyFixture} from "./helpers/PolicyFixture.sol";
 import {MockERC721} from "./mocks/TokenMocks.sol";
 
 /// @notice End-to-end fills against the real Seaport and OpenSea conduit, with the vault created
 ///         through the factory: Seaport calls the vault's `isValidSignature`, the conduit moves the
 ///         assets, and policy failures block the fill while free-tier orders remain fillable.
-contract ListoorVaultFulfillForkTest is BaseFork {
+contract SeavaultFulfillForkTest is BaseFork {
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
     uint256 internal constant TOKEN_ID = 42;
     uint256 internal constant PRICE = 1 ether;
 
-    ListoorVaultFactory internal factory;
-    ListoorVault internal vault;
+    SeavaultFactory internal factory;
+    Seavault internal vault;
     MockERC721 internal nft;
     address internal factoryOwner = makeAddr("factoryOwner");
     address internal owner = makeAddr("owner");
     address internal taker = makeAddr("taker");
     address internal keeper;
     uint256 internal keeperPk;
+    PolicyFixture.Rule internal policy;
 
     function setUp() public {
         forkBase();
         (keeper, keeperPk) = makeAddrAndKey("keeper");
         nft = new MockERC721();
-        factory = new ListoorVaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        factory = new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
         // Short trial so the lapse test can warp past it without outliving its order. Irrelevant to
         // the rest of the suite: while the price is zero every vault counts as subscribed.
         vm.prank(factoryOwner);
         factory.setTrialPeriod(1 hours);
         vm.prank(owner);
         vault = factory.createVault(keccak256("fulfill"), keeper);
+        policy = PolicyFixture.Rule(address(nft), PRICE, PRICE);
 
         vm.startPrank(owner);
         vault.setPaymentTokenAllowed(vault.NATIVE_TOKEN(), true);
         vault.setPaymentTokenAllowed(WETH, true);
-        vault.setListingFloor(address(nft), PRICE);
-        vault.setOfferCeiling(address(nft), PRICE);
+        vault.setPolicyRoot(bytes32(0), PolicyFixture.leaf(policy));
         vault.setConduitApprovalForAll(address(nft), true);
         vault.setConduitAllowance(WETH, type(uint256).max);
         vault.setNativeBuyAllowance(PRICE);
@@ -115,29 +117,20 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(nft.ownerOf(TOKEN_ID), taker);
     }
 
-    function test_automaticWithdrawalsPauseOnExpiryAndResumeAfterRenewal() public {
+    function test_automaticWithdrawalsCanBeEnabledAndRunAfterExpiry() public {
         vm.prank(factoryOwner);
         factory.setSubscription(factoryOwner, 0.01 ether);
+        vm.warp(factory.paidThrough(address(vault)) + 1);
+        assertFalse(factory.isSubscribed(address(vault)));
         vm.prank(owner);
         vault.setAutoWithdrawEnabled(true);
         vm.deal(address(vault), PRICE);
         deal(WETH, address(vault), PRICE);
         uint256 ownerWethBalance = IERC20(WETH).balanceOf(owner);
-        vm.warp(factory.paidThrough(address(vault)) + 1);
 
+        vm.expectCall(owner, PRICE, bytes(""));
         vm.startPrank(keeper);
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
         vault.autoWithdrawETH(PRICE);
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
-        vault.autoWithdrawERC20(WETH, PRICE);
-        vm.stopPrank();
-        assertTrue(vault.autoWithdrawEnabled());
-
-        vm.prank(owner);
-        vault.renewSubscription(1, 0.01 ether);
-        vm.expectCall(owner, PRICE - 0.01 ether, bytes(""));
-        vm.startPrank(keeper);
-        vault.autoWithdrawETH(PRICE - 0.01 ether);
         vault.autoWithdrawERC20(WETH, PRICE);
         vm.stopPrank();
 
@@ -145,40 +138,18 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(address(vault).balance, 0);
     }
 
-    function test_blockingPausesAutomaticWithdrawalsUntilUnblocked() public {
+    function test_flaggedVaultCanEnableAndRunAutomaticWithdrawals() public {
         vm.prank(factoryOwner);
-        factory.setSubscription(factoryOwner, 0.01 ether);
+        factory.setBlocked(address(vault), true);
         vm.prank(owner);
         vault.setAutoWithdrawEnabled(true);
         vm.deal(address(vault), PRICE);
         deal(WETH, address(vault), PRICE);
         uint256 ownerWethBalance = IERC20(WETH).balanceOf(owner);
-        vm.prank(factoryOwner);
-        factory.setBlocked(address(vault), true);
 
+        vm.expectCall(owner, PRICE, bytes(""));
         vm.startPrank(keeper);
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
         vault.autoWithdrawETH(PRICE);
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
-        vault.autoWithdrawERC20(WETH, PRICE);
-        vm.stopPrank();
-
-        vm.prank(owner);
-        vault.renewSubscription(1, 0.01 ether);
-        assertTrue(factory.isSubscribed(address(vault)));
-        vm.startPrank(keeper);
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
-        vault.autoWithdrawETH(PRICE - 0.01 ether);
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
-        vault.autoWithdrawERC20(WETH, PRICE);
-        vm.stopPrank();
-        assertTrue(vault.autoWithdrawEnabled());
-
-        vm.prank(factoryOwner);
-        factory.setBlocked(address(vault), false);
-        vm.expectCall(owner, PRICE - 0.01 ether, bytes(""));
-        vm.startPrank(keeper);
-        vault.autoWithdrawETH(PRICE - 0.01 ether);
         vault.autoWithdrawERC20(WETH, PRICE);
         vm.stopPrank();
 
@@ -193,7 +164,7 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         nft.mint(address(vault), TOKEN_ID);
         Order memory order = _signed(_listing(1 wei));
 
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.PriceBelowFloor.selector, PRICE, 1 wei));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, PRICE, 1 wei));
         vm.prank(taker);
         SEAPORT.fulfillOrder{value: 1 wei}(order, bytes32(0));
     }
@@ -216,26 +187,18 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         assertEq(nft.ownerOf(TOKEN_ID), taker);
     }
 
-    function test_blockingStopsUnvalidatedOrdersAndUnblockingRestoresThem() public {
+    function test_flaggedVaultCanFillAnUnvalidatedListing() public {
         nft.mint(address(vault), TOKEN_ID);
         Order memory order = _signed(_listing(PRICE));
         vm.prank(factoryOwner);
         factory.setBlocked(address(vault), true);
 
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
-        vm.prank(taker);
-        SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
-        assertEq(nft.ownerOf(TOKEN_ID), address(vault));
-
-        vm.prank(factoryOwner);
-        factory.setBlocked(address(vault), false);
         vm.prank(taker);
         assertTrue(SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0)));
         assertEq(nft.ownerOf(TOKEN_ID), taker);
     }
 
-    /// @dev A block cannot reach orders Seaport has already validated; those need cancellation.
-    function test_validatedListingStillFillsWhileBlocked() public {
+    function test_flaggedVaultCanFillAValidatedListing() public {
         nft.mint(address(vault), TOKEN_ID);
         Order[] memory orders = new Order[](1);
         orders[0] = _signed(_listing(PRICE));
@@ -261,15 +224,14 @@ contract ListoorVaultFulfillForkTest is BaseFork {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ListoorVault.OrderStartsTooLate.selector, latestStart, components.startTime
+                Seavault.OrderStartsTooLate.selector, latestStart, components.startTime
             )
         );
         SEAPORT.validate(orders);
     }
 
-    /// @dev What remains: a listing starting as far ahead as allowed, validated today, fills under
-    ///      today's floor until it expires, which is twice `maxOrderDuration` from now at most.
-    function test_validatedListingStartingAtTheLatestFillsUnderTheOldFloor() public {
+    /// @dev A listing validated at the latest allowed start still has to be retired on a root change.
+    function test_policyRootRevokesFutureValidatedListing() public {
         nft.mint(address(vault), TOKEN_ID);
         OrderComponents memory components = _listing(PRICE);
         components.startTime = block.timestamp + vault.maxOrderDuration();
@@ -277,16 +239,19 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         Order[] memory orders = new Order[](1);
         orders[0] = _signed(components);
         SEAPORT.validate(orders);
+        bytes32 previous = vault.policyRoot();
+        policy.floor = 10 * PRICE;
         vm.prank(owner);
-        vault.setListingFloor(address(nft), 10 * PRICE);
+        vault.setPolicyRoot(previous, PolicyFixture.leaf(policy));
 
         vm.warp(components.endTime - 1);
+        vm.expectRevert(Seavault.DigestMismatch.selector);
         vm.prank(taker);
-        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0)));
-        assertEq(nft.ownerOf(TOKEN_ID), taker);
+        SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0));
+        assertEq(nft.ownerOf(TOKEN_ID), address(vault));
     }
 
-    function test_blockedKeeperCanCancelValidatedListing() public {
+    function test_keeperCanCancelValidatedListingForFlaggedVault() public {
         nft.mint(address(vault), TOKEN_ID);
         OrderComponents[] memory components = new OrderComponents[](1);
         components[0] = _listing(PRICE);
@@ -329,7 +294,7 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         vm.prank(owner);
         vault.setKeeper(makeAddr("newKeeper"));
 
-        vm.expectRevert(ListoorVault.DigestMismatch.selector);
+        vm.expectRevert(Seavault.DigestMismatch.selector);
         vm.prank(taker);
         SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
     }
@@ -346,7 +311,7 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         vm.prank(owner);
         vault.setKeeper(makeAddr("newKeeper"));
 
-        vm.expectRevert(ListoorVault.DigestMismatch.selector);
+        vm.expectRevert(Seavault.DigestMismatch.selector);
         vm.prank(taker);
         SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0));
     }
@@ -367,7 +332,11 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0));
     }
 
-    function test_keeperBuysListingForOwner() public {
+    function test_keeperBuysListingForOwnerAfterSubscriptionExpires() public {
+        vm.prank(factoryOwner);
+        factory.setSubscription(factoryOwner, 0.01 ether);
+        vm.warp(factory.paidThrough(address(vault)) + 1);
+        assertFalse(factory.isSubscribed(address(vault)));
         (address seller, uint256 sellerPk) = makeAddrAndKey("seller");
         nft.mint(seller, TOKEN_ID);
         vm.prank(seller);
@@ -376,14 +345,14 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         AdvancedOrder memory order = _sellersListing(seller, sellerPk, address(0));
 
         vm.prank(keeper);
-        assertTrue(vault.buy(order, bytes32(0)));
+        assertTrue(vault.buy(order, bytes32(0), PolicyFixture.single(policy)));
 
         assertEq(nft.ownerOf(TOKEN_ID), owner);
         assertEq(seller.balance, PRICE);
         assertEq(address(vault).balance, 0);
     }
 
-    function test_blockingStopsDirectBuysUntilUnblocked() public {
+    function test_flaggedVaultCanBuyDirectly() public {
         (address seller, uint256 sellerPk) = makeAddrAndKey("seller");
         nft.mint(seller, TOKEN_ID);
         vm.prank(seller);
@@ -393,17 +362,11 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         vm.prank(factoryOwner);
         factory.setBlocked(address(vault), true);
 
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
         vm.prank(keeper);
-        vault.buy(order, bytes32(0));
-        assertEq(nft.ownerOf(TOKEN_ID), seller);
-        assertEq(address(vault).balance, PRICE);
-
-        vm.prank(factoryOwner);
-        factory.setBlocked(address(vault), false);
-        vm.prank(keeper);
-        assertTrue(vault.buy(order, bytes32(0)));
+        assertTrue(vault.buy(order, bytes32(0), PolicyFixture.single(policy)));
         assertEq(nft.ownerOf(TOKEN_ID), owner);
+        assertEq(seller.balance, PRICE);
+        assertEq(address(vault).balance, 0);
     }
 
     /// @dev WETH leaves through the vault's conduit allowance, the same cap its bids draw on.
@@ -416,7 +379,7 @@ contract ListoorVaultFulfillForkTest is BaseFork {
         AdvancedOrder memory order = _sellersListing(seller, sellerPk, WETH);
 
         vm.prank(keeper);
-        assertTrue(vault.buy(order, OPENSEA_CONDUIT_KEY));
+        assertTrue(vault.buy(order, OPENSEA_CONDUIT_KEY, PolicyFixture.single(policy)));
 
         assertEq(nft.ownerOf(TOKEN_ID), owner);
         assertEq(IERC20(WETH).balanceOf(seller), PRICE);
@@ -526,7 +489,9 @@ contract ListoorVaultFulfillForkTest is BaseFork {
                 conduitKey: components.conduitKey,
                 totalOriginalConsiderationItems: components.consideration.length
             }),
-            signature: abi.encode(components, abi.encodePacked(r, s, v))
+            signature: abi.encode(
+                components, abi.encodePacked(r, s, v), PolicyFixture.single(policy)
+            )
         });
     }
 }

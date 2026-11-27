@@ -3,19 +3,19 @@ pragma solidity 0.8.28;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
+import {Seavault} from "../src/Seavault.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
-/// @notice Automatic withdrawals require owner consent, subscription entitlement and an unblocked vault.
-contract ListoorVaultAutoWithdrawTest is VaultTest {
-    function test_disabledByDefaultEvenForSubscribers() public {
+/// @notice Automatic withdrawals require owner consent.
+contract SeavaultAutoWithdrawTest is VaultTest {
+    function test_disabledByDefault() public {
         assertFalse(vault.autoWithdrawEnabled());
         _fundVault();
 
         vm.startPrank(keeper);
-        vm.expectRevert(ListoorVault.AutoWithdrawDisabled.selector);
+        vm.expectRevert(Seavault.AutoWithdrawDisabled.selector);
         vault.autoWithdrawETH(1 ether);
-        vm.expectRevert(ListoorVault.AutoWithdrawDisabled.selector);
+        vm.expectRevert(Seavault.AutoWithdrawDisabled.selector);
         vault.autoWithdrawERC20(address(weth), 1 ether);
         vm.stopPrank();
     }
@@ -38,22 +38,12 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
         assertTrue(vault.autoWithdrawEnabled());
     }
 
-    function test_cannotEnableWithoutSubscription() public {
-        subscriptions.set(false, 0.01 ether);
+    function test_canEnableWhileLapsed() public {
+        subscriptions.set(false);
 
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
         vm.prank(owner);
         vault.setAutoWithdrawEnabled(true);
-        assertFalse(vault.autoWithdrawEnabled());
-    }
-
-    function test_cannotEnableWhileBlocked() public {
-        subscriptions.setBlocked(true);
-
-        vm.expectRevert(ListoorVault.VaultBlocked.selector);
-        vm.prank(owner);
-        vault.setAutoWithdrawEnabled(true);
-        assertFalse(vault.autoWithdrawEnabled());
+        assertTrue(vault.autoWithdrawEnabled());
     }
 
     function testFuzz_keeperReturnsEthOnlyToOwner(uint256 amount) public {
@@ -103,47 +93,20 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
         _fundVault();
 
         vm.startPrank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.NotOwnerOrKeeper.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.NotOwnerOrKeeper.selector, stranger));
         vault.autoWithdrawETH(1 ether);
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.NotOwnerOrKeeper.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.NotOwnerOrKeeper.selector, stranger));
         vault.autoWithdrawERC20(address(weth), 1 ether);
         vm.stopPrank();
-    }
-
-    function test_expiryPausesBothAutomaticWithdrawalsAndRenewalResumesThem() public {
-        _enable();
-        _fundVault();
-        uint256 ownerBalance = owner.balance;
-        subscriptions.set(false, 0.01 ether);
-
-        vm.startPrank(keeper);
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
-        vault.autoWithdrawETH(1 ether);
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
-        vault.autoWithdrawERC20(address(weth), 1 ether);
-        vm.stopPrank();
-        assertTrue(vault.autoWithdrawEnabled());
-        assertEq(address(vault).balance, 1 ether);
-        assertEq(weth.balanceOf(address(vault)), 1 ether);
-
-        vm.prank(owner);
-        vault.renewSubscription(1, 0.01 ether);
-        vm.startPrank(keeper);
-        vault.autoWithdrawETH(0.99 ether);
-        vault.autoWithdrawERC20(address(weth), 1 ether);
-        vm.stopPrank();
-
-        assertEq(owner.balance, ownerBalance + 0.99 ether);
-        assertEq(weth.balanceOf(owner), 1 ether);
     }
 
     function test_ownerCanDisableWhileLapsedAndBlocked() public {
         _enable();
-        subscriptions.set(false, 0.01 ether);
+        subscriptions.set(false);
         subscriptions.setBlocked(true);
 
         vm.expectEmit(true, true, true, true);
-        emit ListoorVault.AutoWithdrawEnabledUpdated(false);
+        emit Seavault.AutoWithdrawEnabledUpdated(false);
         vm.prank(owner);
         vault.setAutoWithdrawEnabled(false);
 
@@ -157,33 +120,19 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
         vault.setAutoWithdrawEnabled(false);
 
         vm.startPrank(keeper);
-        vm.expectRevert(ListoorVault.AutoWithdrawDisabled.selector);
+        vm.expectRevert(Seavault.AutoWithdrawDisabled.selector);
         vault.autoWithdrawETH(1 ether);
-        vm.expectRevert(ListoorVault.AutoWithdrawDisabled.selector);
+        vm.expectRevert(Seavault.AutoWithdrawDisabled.selector);
         vault.autoWithdrawERC20(address(weth), 1 ether);
         vm.stopPrank();
     }
 
-    function test_blockingPausesAutomaticWithdrawalsUntilUnblocked() public {
+    function test_flaggedVaultCanEnableAndRunAutomaticWithdrawals() public {
+        subscriptions.setBlocked(true);
         _enable();
         _fundVault();
-        subscriptions.setBlocked(true);
         uint256 ownerBalance = owner.balance;
 
-        address[2] memory callers = [owner, keeper];
-        for (uint256 i; i < callers.length; ++i) {
-            vm.startPrank(callers[i]);
-            vm.expectRevert(ListoorVault.VaultBlocked.selector);
-            vault.autoWithdrawETH(1 ether);
-            vm.expectRevert(ListoorVault.VaultBlocked.selector);
-            vault.autoWithdrawERC20(address(weth), 1 ether);
-            vm.stopPrank();
-        }
-        assertTrue(vault.autoWithdrawEnabled());
-        assertEq(address(vault).balance, 1 ether);
-        assertEq(weth.balanceOf(address(vault)), 1 ether);
-
-        subscriptions.setBlocked(false);
         vm.startPrank(keeper);
         vault.autoWithdrawETH(1 ether);
         vault.autoWithdrawERC20(address(weth), 1 ether);
@@ -193,29 +142,10 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
         assertEq(weth.balanceOf(owner), 1 ether);
     }
 
-    function test_unblockingDoesNotBypassSubscriptionRequirement() public {
-        _enable();
-        _fundVault();
-        subscriptions.setBlocked(true);
-        subscriptions.set(false, 0.01 ether);
-        subscriptions.setBlocked(false);
-
-        vm.startPrank(keeper);
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
-        vault.autoWithdrawETH(1 ether);
-        vm.expectRevert(ListoorVault.SubscriptionInactive.selector);
-        vault.autoWithdrawERC20(address(weth), 1 ether);
-        vm.stopPrank();
-
-        assertTrue(vault.autoWithdrawEnabled());
-        assertEq(address(vault).balance, 1 ether);
-        assertEq(weth.balanceOf(address(vault)), 1 ether);
-    }
-
     function test_ownerWithdrawalsRemainAvailableAfterExpiryAndBlocking() public {
         _enable();
         _fundVault();
-        subscriptions.set(false, 0.01 ether);
+        subscriptions.set(false);
         subscriptions.setBlocked(true);
         address cold = makeAddr("cold");
 
@@ -254,15 +184,15 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
         vault.transferOwnership(newOwner);
 
         vm.expectEmit(true, true, true, true);
-        emit ListoorVault.AutoWithdrawEnabledUpdated(false);
+        emit Seavault.AutoWithdrawEnabledUpdated(false);
         vm.prank(newOwner);
         vault.acceptOwnership();
         assertFalse(vault.autoWithdrawEnabled());
 
         vm.startPrank(keeper);
-        vm.expectRevert(ListoorVault.AutoWithdrawDisabled.selector);
+        vm.expectRevert(Seavault.AutoWithdrawDisabled.selector);
         vault.autoWithdrawETH(1 ether);
-        vm.expectRevert(ListoorVault.AutoWithdrawDisabled.selector);
+        vm.expectRevert(Seavault.AutoWithdrawDisabled.selector);
         vault.autoWithdrawERC20(address(weth), 1 ether);
         vm.stopPrank();
 
@@ -306,9 +236,9 @@ contract ListoorVaultAutoWithdrawTest is VaultTest {
         vault.setKeeper(newKeeper);
 
         vm.startPrank(keeper);
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.NotOwnerOrKeeper.selector, keeper));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.NotOwnerOrKeeper.selector, keeper));
         vault.autoWithdrawETH(1 ether);
-        vm.expectRevert(abi.encodeWithSelector(ListoorVault.NotOwnerOrKeeper.selector, keeper));
+        vm.expectRevert(abi.encodeWithSelector(Seavault.NotOwnerOrKeeper.selector, keeper));
         vault.autoWithdrawERC20(address(weth), 1 ether);
         vm.stopPrank();
 

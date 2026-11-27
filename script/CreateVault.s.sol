@@ -3,8 +3,8 @@ pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 
-import {ListoorVault} from "../src/ListoorVault.sol";
-import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
+import {Seavault} from "../src/Seavault.sol";
+import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 
 /// @notice Creates a vault through the factory, owned by the broadcasting key.
 /// @dev The vault lands on the same address on every chain for a given (owner, salt), so run this
@@ -20,8 +20,8 @@ import {ListoorVaultFactory} from "../src/ListoorVaultFactory.sol";
 contract CreateVault is Script {
     string public constant DEFAULT_SALT = "primary";
 
-    function run() external returns (ListoorVault vault) {
-        ListoorVaultFactory factory = ListoorVaultFactory(vm.envAddress("FACTORY"));
+    function run() external returns (Seavault vault) {
+        SeavaultFactory factory = SeavaultFactory(vm.envAddress("FACTORY"));
         address keeper = vm.envAddress("KEEPER");
         bytes32 salt = keccak256(bytes(vm.envOr("VAULT_SALT", string(DEFAULT_SALT))));
         address owner = msg.sender;
@@ -44,6 +44,6 @@ contract CreateVault is Script {
         view
         returns (address)
     {
-        return ListoorVaultFactory(factory).predictVault(owner, keccak256(bytes(salt)));
+        return SeavaultFactory(factory).predictVault(owner, keccak256(bytes(salt)));
     }
 }
