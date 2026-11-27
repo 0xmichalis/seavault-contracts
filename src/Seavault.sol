@@ -23,7 +23,8 @@ import {
     ConsiderationItem,
     CriteriaResolver,
     OfferItem,
-    OrderComponents
+    OrderComponents,
+    OrderParameters
 } from "seaport-types/src/lib/ConsiderationStructs.sol";
 
 import {IVaultOwnershipRegistry} from "./interfaces/IVaultOwnershipRegistry.sol";
@@ -44,9 +45,9 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///      Seaport is about to execute and policy can be enforced against them.
 ///
 ///      Worst case for a compromised keeper key is therefore a sale at the floor, or a bid or a buy
-///      at the ceiling, not asset theft. A collection never sells below its ceiling, so the two
-///      bounds cannot be cycled against each other. Floors are loss bounds, not live prices: repricing
-///      below a floor needs an owner transaction.
+///      at the ceiling, not asset theft. A collection never sells below its ceiling in the same
+///      denomination. Floors are loss bounds, not live prices: repricing below a floor needs an
+///      owner transaction.
 ///
 ///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
 ///      on-chain, which anyone can do with its signature, or partially filled. Replacing the collection
@@ -57,8 +58,7 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 contract Seavault is Ownable2Step, IERC1271 {
     using SafeERC20 for IERC20;
 
-    /// @notice Sentinel for the native asset, matching Seaport's `NATIVE` items and used as the key
-    ///         for native ETH in the payment-token allowlist.
+    /// @notice Sentinel for the native asset, matching Seaport's `NATIVE` items.
     address public constant NATIVE_TOKEN = address(0);
 
     /// @notice First word of an OpenSea login signature, `keccak256("Seavault.OpenSeaLogin")`.
@@ -94,6 +94,9 @@ contract Seavault is Ownable2Step, IERC1271 {
 
     bytes32 private immutable seaportVersionHash;
 
+    address private immutable wNative;
+    address private immutable usdc;
+
     /// @notice Hot key authorized to sign orders on the vault's behalf.
     address public keeper;
 
@@ -104,19 +107,16 @@ contract Seavault is Ownable2Step, IERC1271 {
     /// @notice Largest share of a sale, in basis points, that may be routed to non-vault recipients.
     uint256 public maxFeeBps;
 
-    /// @notice Tokens accepted as payment, keyed by address (`NATIVE_TOKEN` for the native asset).
-    mapping(address token => bool allowed) public paymentTokenAllowed;
-
     /// @notice Owner's commitment to collection floors and ceilings. Zero disables listings, bids
     ///         and buys.
     bytes32 public policyRoot;
 
-    /// @notice Per-token floor override. Zero falls back to the proven collection floor.
+    /// @notice Native-denominated per-token floor override. Zero falls back to the collection floor.
     mapping(address collection => mapping(uint256 tokenId => uint256 floorPerUnit)) public
         tokenListingFloor;
 
     /// @notice The collection's minimum proceeds and maximum spend per NFT, the leaf's salt, and
-    ///         its inclusion proof against `policyRoot`. Amounts use an allowed payment token.
+    ///         its inclusion proof against `policyRoot`. Amounts use the order currency's base units.
     struct CollectionWitness {
         address collection;
         uint256 floor;
@@ -137,7 +137,6 @@ contract Seavault is Ownable2Step, IERC1271 {
     event TokenListingFloorUpdated(
         address indexed collection, uint256 indexed tokenId, uint256 floorPerUnit
     );
-    event PaymentTokenUpdated(address indexed token, bool allowed);
     event MaxOrderDurationUpdated(uint256 maxOrderDuration);
     event MaxFeeBpsUpdated(uint256 maxFeeBps);
     event NativeBuyAllowanceUpdated(uint256 allowance);
@@ -183,15 +182,16 @@ contract Seavault is Ownable2Step, IERC1271 {
         address conduit_,
         address owner_,
         address keeper_,
-        address factory_
+        address factory_,
+        address wNative_,
+        address usdc_
     ) Ownable(owner_) {
         if (
             seaport_ == address(0) || conduit_ == address(0) || keeper_ == address(0)
-                || factory_ == address(0)
+                || factory_ == address(0) || wNative_ == address(0)
         ) {
             revert ZeroAddress();
         }
-
         (string memory version, bytes32 reportedDomainSeparator,) =
             ConsiderationInterface(seaport_).information();
         bytes32 versionHash = keccak256(bytes(version));
@@ -203,6 +203,8 @@ contract Seavault is Ownable2Step, IERC1271 {
         seaport = ConsiderationInterface(seaport_);
         conduit = conduit_;
         factory = IVaultOwnershipRegistry(factory_);
+        wNative = wNative_;
+        usdc = usdc_;
         seaportVersionHash = versionHash;
         keeper = keeper_;
         maxOrderDuration = DEFAULT_MAX_ORDER_DURATION;
@@ -320,8 +322,8 @@ contract Seavault is Ownable2Step, IERC1271 {
         emit PolicyRootUpdated(newRoot);
     }
 
-    /// @notice Sets a token's own listing floor. An override still requires a collection witness
-    ///         so the vault can enforce the ceiling as well as the floor.
+    /// @notice Sets a token's own native-denominated listing floor. An override still requires a
+    ///         collection witness so the vault can enforce the ceiling as well as the floor.
     function setTokenListingFloor(address collection, uint256 tokenId, uint256 floorPerUnit)
         external
         onlyOwner
@@ -330,12 +332,9 @@ contract Seavault is Ownable2Step, IERC1271 {
         emit TokenListingFloorUpdated(collection, tokenId, floorPerUnit);
     }
 
-    /// @notice Allows or revokes a token as payment.
-    /// @dev Floors and ceilings are denominated in whichever allowed token an order uses, so allow
-    ///      only assets of the same value: the native asset and its wrapper.
-    function setPaymentTokenAllowed(address token, bool allowed) external onlyOwner {
-        paymentTokenAllowed[token] = allowed;
-        emit PaymentTokenUpdated(token, allowed);
+    /// @notice Reports whether the vault supports a currency. Orders also need a matching policy.
+    function paymentTokenAllowed(address token) external view returns (bool allowed) {
+        return token == NATIVE_TOKEN || token == wNative || token == usdc;
     }
 
     function setMaxOrderDuration(uint256 newMaxOrderDuration) external onlyOwner {
@@ -410,31 +409,7 @@ contract Seavault is Ownable2Step, IERC1271 {
             revert InvalidOfferer();
         }
 
-        _checkWitnessCount(witnesses.length, order.parameters.offer.length);
-        CollectionWitness[] memory policies = witnesses;
-        _verifyCollectionWitnesses(policies);
-        uint256 maxSpend;
-        for (uint256 i; i < order.parameters.offer.length; ++i) {
-            OfferItem calldata item = order.parameters.offer[i];
-            if (item.itemType != ItemType.ERC721 && item.itemType != ItemType.ERC1155) {
-                revert UnsupportedOfferItem(item.itemType);
-            }
-            uint256 ceilingPerUnit = _collectionPolicy(policies, item.token).ceiling;
-            if (ceilingPerUnit == 0) revert CollectionNotBiddable(item.token);
-            maxSpend += ceilingPerUnit * Math.min(item.startAmount, item.endAmount);
-        }
-
-        uint256 spend;
-        uint256 nativeSpend;
-        for (uint256 i; i < order.parameters.consideration.length; ++i) {
-            ConsiderationItem calldata item = order.parameters.consideration[i];
-            _requirePaymentItem(item.itemType, item.token);
-            uint256 amount = Math.max(item.startAmount, item.endAmount);
-            spend += amount;
-            if (item.itemType == ItemType.NATIVE) nativeSpend += amount;
-        }
-        if (spend > maxSpend) revert PriceAboveCeiling(maxSpend, spend);
-
+        uint256 nativeSpend = _validateBuy(order.parameters, witnesses);
         uint256 value =
             Math.mulDiv(nativeSpend, order.numerator, order.denominator, Math.Rounding.Ceil);
         if (value > nativeBuyAllowance) {
@@ -445,6 +420,38 @@ contract Seavault is Ownable2Step, IERC1271 {
         return seaport.fulfillAdvancedOrder{value: value}(
             order, new CriteriaResolver[](0), fulfillerConduitKey, owner()
         );
+    }
+
+    function _validateBuy(OrderParameters calldata order, CollectionWitness[] calldata witnesses)
+        private
+        view
+        returns (uint256 nativeSpend)
+    {
+        _checkWitnessCount(witnesses.length, order.offer.length);
+        ConsiderationItem[] calldata consideration = order.consideration;
+        bool paysUsdc = consideration.length != 0 && _usesUsdc(consideration[0].token);
+        CollectionWitness[] memory policies = witnesses;
+        _verifyCollectionWitnesses(policies, paysUsdc);
+        uint256 maxSpend;
+        for (uint256 i; i < order.offer.length; ++i) {
+            OfferItem calldata item = order.offer[i];
+            if (item.itemType != ItemType.ERC721 && item.itemType != ItemType.ERC1155) {
+                revert UnsupportedOfferItem(item.itemType);
+            }
+            uint256 ceilingPerUnit = _collectionPolicy(policies, item.token).ceiling;
+            if (ceilingPerUnit == 0) revert CollectionNotBiddable(item.token);
+            maxSpend += ceilingPerUnit * Math.min(item.startAmount, item.endAmount);
+        }
+
+        uint256 spend;
+        for (uint256 i; i < consideration.length; ++i) {
+            ConsiderationItem calldata item = consideration[i];
+            _requirePaymentItem(item.itemType, item.token, paysUsdc);
+            uint256 amount = Math.max(item.startAmount, item.endAmount);
+            spend += amount;
+            if (item.itemType == ItemType.NATIVE) nativeSpend += amount;
+        }
+        if (spend > maxSpend) revert PriceAboveCeiling(maxSpend, spend);
     }
 
     /// @notice Invalidates every order the vault has ever signed.
@@ -476,15 +483,15 @@ contract Seavault is Ownable2Step, IERC1271 {
     }
 
     /// @notice Wraps native proceeds so they can be bid with.
-    /// @dev Restricted to allowlisted payment tokens, which is where the wrapped native token lives.
+    /// @dev Only the wrapped native token has a native deposit and redemption path.
     function wrapETH(address weth, uint256 amount) external onlyOwnerOrKeeper {
-        if (!paymentTokenAllowed[weth]) revert PaymentTokenNotAllowed(weth);
+        if (weth != wNative) revert PaymentTokenNotAllowed(weth);
         IWETH(weth).deposit{value: amount}();
     }
 
     /// @notice Unwraps to the native asset, e.g. to fund gas top-ups from the owner side.
     function unwrapWETH(address weth, uint256 amount) external onlyOwnerOrKeeper {
-        if (!paymentTokenAllowed[weth]) revert PaymentTokenNotAllowed(weth);
+        if (weth != wNative) revert PaymentTokenNotAllowed(weth);
         IWETH(weth).withdraw(amount);
     }
 
@@ -585,12 +592,15 @@ contract Seavault is Ownable2Step, IERC1271 {
         ItemType offered = order.offer[0].itemType;
         if (offered == ItemType.ERC721 || offered == ItemType.ERC1155) {
             _checkWitnessCount(witnesses.length, order.offer.length);
-            _verifyCollectionWitnesses(witnesses);
-            _validateSale(order, witnesses);
+            bool paysUsdc =
+                order.consideration.length != 0 && _usesUsdc(order.consideration[0].token);
+            _verifyCollectionWitnesses(witnesses, paysUsdc);
+            _validateSale(order, witnesses, paysUsdc);
         } else if (offered == ItemType.ERC20) {
             _checkWitnessCount(witnesses.length, order.consideration.length);
-            _verifyCollectionWitnesses(witnesses);
-            _validateBid(order, witnesses);
+            bool paysUsdc = _usesUsdc(order.offer[0].token);
+            _verifyCollectionWitnesses(witnesses, paysUsdc);
+            _validateBid(order, witnesses, paysUsdc);
         } else {
             revert UnsupportedOfferItem(offered);
         }
@@ -599,10 +609,11 @@ contract Seavault is Ownable2Step, IERC1271 {
     /// @dev Selling: every offered token must have a floor, and the vault's own proceeds must clear
     ///      the sum of those floors. Fees are excluded from the proceeds and capped separately, so
     ///      they cannot double as a payout channel.
-    function _validateSale(OrderComponents memory order, CollectionWitness[] memory witnesses)
-        private
-        view
-    {
+    function _validateSale(
+        OrderComponents memory order,
+        CollectionWitness[] memory witnesses,
+        bool paysUsdc
+    ) private view {
         uint256 requiredProceeds;
         for (uint256 i; i < order.offer.length; ++i) {
             OfferItem memory item = order.offer[i];
@@ -611,7 +622,8 @@ contract Seavault is Ownable2Step, IERC1271 {
             }
 
             CollectionWitness memory policy = _collectionPolicy(witnesses, item.token);
-            uint256 floorPerUnit = tokenListingFloor[item.token][item.identifierOrCriteria];
+            uint256 floorPerUnit =
+                paysUsdc ? 0 : tokenListingFloor[item.token][item.identifierOrCriteria];
             if (floorPerUnit == 0) floorPerUnit = policy.floor;
             if (floorPerUnit == 0) revert CollectionNotListable(item.token);
 
@@ -621,7 +633,7 @@ contract Seavault is Ownable2Step, IERC1271 {
             requiredProceeds += floorPerUnit * Math.max(item.startAmount, item.endAmount);
         }
 
-        (uint256 proceeds, uint256 fees) = _tallyPayments(order.consideration);
+        (uint256 proceeds, uint256 fees) = _tallyPayments(order.consideration, paysUsdc);
         if (proceeds < requiredProceeds) revert PriceBelowFloor(requiredProceeds, proceeds);
 
         uint256 total = proceeds + fees;
@@ -631,15 +643,16 @@ contract Seavault is Ownable2Step, IERC1271 {
     /// @dev Bidding: everything the vault offers is spend, and it is bounded by the ceilings of the
     ///      tokens the order delivers back to the vault. Criteria items are validated the same way;
     ///      the collection is what is constrained, the token id is not.
-    function _validateBid(OrderComponents memory order, CollectionWitness[] memory witnesses)
-        private
-        view
-    {
+    function _validateBid(
+        OrderComponents memory order,
+        CollectionWitness[] memory witnesses,
+        bool paysUsdc
+    ) private view {
         uint256 spend;
         for (uint256 i; i < order.offer.length; ++i) {
             OfferItem memory item = order.offer[i];
             if (item.itemType != ItemType.ERC20) revert UnsupportedOfferItem(item.itemType);
-            if (!paymentTokenAllowed[item.token]) revert PaymentTokenNotAllowed(item.token);
+            _requirePaymentItem(ItemType.ERC20, item.token, paysUsdc);
             spend += Math.max(item.startAmount, item.endAmount);
         }
 
@@ -648,7 +661,7 @@ contract Seavault is Ownable2Step, IERC1271 {
             ConsiderationItem memory item = order.consideration[i];
             if (_isPaymentItem(item.itemType)) {
                 // Fees come out of the offered amount, which `maxSpend` already bounds.
-                _requirePaymentItem(item.itemType, item.token);
+                _requirePaymentItem(item.itemType, item.token, paysUsdc);
                 continue;
             }
 
@@ -672,7 +685,10 @@ contract Seavault is Ownable2Step, IERC1271 {
 
     /// @dev Verify a collection once even if several items use it. Address order gives callers a
     ///      canonical witness array and bounds item lookups to logarithmic work.
-    function _verifyCollectionWitnesses(CollectionWitness[] memory witnesses) private view {
+    function _verifyCollectionWitnesses(CollectionWitness[] memory witnesses, bool paysUsdc)
+        private
+        view
+    {
         bytes32 root = policyRoot;
         if (root == bytes32(0)) revert InvalidCollectionWitness();
         address previous;
@@ -681,14 +697,11 @@ contract Seavault is Ownable2Step, IERC1271 {
             if (witness.collection <= previous || witness.siblings.length > MAX_POLICY_DEPTH) {
                 revert InvalidCollectionWitness();
             }
-            // Double-hash leaves to distinguish them from the tree's pairs of 32-byte hashes.
-            bytes32 leaf = keccak256(
-                bytes.concat(
-                    keccak256(
-                        abi.encode(witness.collection, witness.floor, witness.ceiling, witness.salt)
-                    )
-                )
+            bytes32 inner = keccak256(
+                abi.encode(witness.collection, witness.floor, witness.ceiling, witness.salt)
             );
+            // The USDC tag makes leaf preimages 33 bytes for USDC, 32 for native and 64 for branches.
+            bytes32 leaf = keccak256(paysUsdc ? bytes.concat(inner, hex"01") : bytes.concat(inner));
             if (!MerkleProof.verify(witness.siblings, root, leaf)) {
                 revert InvalidCollectionWitness();
             }
@@ -715,14 +728,14 @@ contract Seavault is Ownable2Step, IERC1271 {
 
     /// @return proceeds the least the vault can end up with, so variable amounts count at their low
     /// @return fees the most everyone else can end up with, so variable amounts count at their high
-    function _tallyPayments(ConsiderationItem[] memory consideration)
+    function _tallyPayments(ConsiderationItem[] memory consideration, bool paysUsdc)
         private
         view
         returns (uint256 proceeds, uint256 fees)
     {
         for (uint256 i; i < consideration.length; ++i) {
             ConsiderationItem memory item = consideration[i];
-            _requirePaymentItem(item.itemType, item.token);
+            _requirePaymentItem(item.itemType, item.token, paysUsdc);
 
             if (item.recipient == address(this)) {
                 proceeds += Math.min(item.startAmount, item.endAmount);
@@ -732,15 +745,18 @@ contract Seavault is Ownable2Step, IERC1271 {
         }
     }
 
-    /// @dev The allowlist is expected to hold only assets of comparable value (native and its
-    ///      wrapper), since floors and ceilings are denominated in whichever of them an order uses.
-    function _requirePaymentItem(ItemType itemType, address token) private view {
+    function _requirePaymentItem(ItemType itemType, address token, bool paysUsdc) private view {
         if (itemType == ItemType.NATIVE) {
             if (token != NATIVE_TOKEN) revert MalformedNativeItem(token);
+            if (!paysUsdc) return;
         } else if (itemType != ItemType.ERC20) {
             revert UnsupportedConsiderationItem(itemType);
         }
-        if (!paymentTokenAllowed[token]) revert PaymentTokenNotAllowed(token);
+        if (token != (paysUsdc ? usdc : wNative)) revert PaymentTokenNotAllowed(token);
+    }
+
+    function _usesUsdc(address token) private view returns (bool) {
+        return token != NATIVE_TOKEN && token == usdc;
     }
 
     function _isPaymentItem(ItemType itemType) private pure returns (bool) {

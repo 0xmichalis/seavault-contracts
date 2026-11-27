@@ -28,6 +28,8 @@ contract DeploySeavaultFactoryRecordTest is Test {
     SeavaultFactory internal factory;
     address internal deployer = address(0xdE10);
     address internal initialOwner = address(0xad);
+    address internal wNative = makeAddr("wNative");
+    address internal usdc = makeAddr("usdc");
     bytes32 internal transactionHash = keccak256("deployment transaction");
     bytes32 internal deploymentBlockHash = keccak256("deployment block");
     string internal seed;
@@ -41,8 +43,9 @@ contract DeploySeavaultFactoryRecordTest is Test {
         vm.roll(100);
         recorder = new DeploymentRecorder();
         seed = recorder.DEFAULT_SALT_SEED();
-        factory =
-            new SeavaultFactory(recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner);
+        factory = new SeavaultFactory(
+            recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner, wNative, usdc
+        );
         vm.etch(address(recorder.CREATE_X()), hex"00");
         vm.mockCall(
             address(recorder.CREATE_X()),
@@ -53,8 +56,9 @@ contract DeploySeavaultFactoryRecordTest is Test {
             abi.encode(address(factory))
         );
         salt = recorder.saltFor(deployer, seed);
-        creationCode =
-            recorder.initCode(recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner);
+        creationCode = recorder.initCode(
+            recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner, wNative, usdc
+        );
         transactionJson = string.concat(
             '{"from":"',
             vm.toString(deployer),
@@ -110,6 +114,8 @@ contract DeploySeavaultFactoryRecordTest is Test {
         assertEq(vm.parseJsonAddress(json, ".factory"), address(factory));
         assertEq(vm.parseJsonAddress(json, ".deployer"), deployer);
         assertEq(vm.parseJsonAddress(json, ".initialOwner"), initialOwner);
+        assertEq(vm.parseJsonAddress(json, ".wNative"), wNative);
+        assertEq(vm.parseJsonAddress(json, ".usdc"), usdc);
         assertEq(vm.parseJsonString(json, ".sourceCommit"), "75a93d1");
         assertEq(vm.parseJsonString(json, ".saltSeed"), seed);
         assertEq(vm.parseJsonBytes32(json, ".factoryRuntimeCodeHash"), address(factory).codehash);
@@ -163,7 +169,7 @@ contract DeploySeavaultFactoryRecordTest is Test {
     }
 
     function test_rejectsMissingConstructorArguments() public {
-        creationCode = new bytes(95);
+        creationCode = new bytes(5 * 32 - 1);
         broadcastJson = broadcastWith(transactionJson, string.concat("[", receipt("0x1"), "]"));
         vm.expectRevert("missing constructor arguments");
         recorder.recordJson(broadcastJson, seed);
@@ -195,6 +201,15 @@ contract DeploySeavaultFactoryRecordTest is Test {
     function test_rejectsMissingFactory() public {
         vm.etch(address(factory), hex"");
         vm.expectRevert("factory is not deployed");
+        recorder.recordJson(broadcastJson, seed);
+        assertEq(recorder.recordedJson(), "");
+    }
+
+    function test_rejectsDifferentFactoryPaymentToken() public {
+        vm.mockCall(
+            address(factory), abi.encodeWithSelector(factory.usdc.selector), abi.encode(wNative)
+        );
+        vm.expectRevert("factory wiring does not match deployment");
         recorder.recordJson(broadcastJson, seed);
         assertEq(recorder.recordedJson(), "");
     }

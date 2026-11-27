@@ -22,7 +22,7 @@ contract SeavaultFactoryForkTest is BaseFork {
 
     function setUp() public {
         forkBase();
-        factory = new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        factory = new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner, WETH, USDC);
     }
 
     function test_createsVaultOwnedByCaller() public {
@@ -37,6 +37,10 @@ contract SeavaultFactoryForkTest is BaseFork {
         assertEq(address(vault.seaport()), address(SEAPORT));
         assertEq(vault.conduit(), OPENSEA_CONDUIT);
         assertEq(address(vault.factory()), address(factory));
+        assertEq(factory.wNative(), WETH);
+        assertEq(factory.usdc(), USDC);
+        assertTrue(vault.paymentTokenAllowed(WETH));
+        assertTrue(vault.paymentTokenAllowed(USDC));
     }
 
     function test_registersVaultForLookup() public {
@@ -225,7 +229,8 @@ contract SeavaultFactoryForkTest is BaseFork {
     /// @dev Two factories cannot land on the same vault address, so a redeployed factory (new
     ///      Seaport, say) yields a fresh set of vaults rather than colliding with the old ones.
     function test_vaultAddressIsScopedToTheFactory() public {
-        SeavaultFactory other = new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner);
+        SeavaultFactory other =
+            new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, factoryOwner, WETH, USDC);
 
         assertTrue(factory.predictVault(alice, SALT) != other.predictVault(alice, SALT));
     }
@@ -258,13 +263,13 @@ contract SeavaultFactoryForkTest is BaseFork {
 
     function test_rejectsZeroAddressesAtDeployment() public {
         vm.expectRevert(SeavaultFactory.ZeroAddress.selector);
-        new SeavaultFactory(address(0), OPENSEA_CONDUIT, factoryOwner);
+        new SeavaultFactory(address(0), OPENSEA_CONDUIT, factoryOwner, WETH, USDC);
 
         vm.expectRevert(SeavaultFactory.ZeroAddress.selector);
-        new SeavaultFactory(address(SEAPORT), address(0), factoryOwner);
+        new SeavaultFactory(address(SEAPORT), address(0), factoryOwner, WETH, USDC);
 
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-        new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, address(0));
+        new SeavaultFactory(address(SEAPORT), OPENSEA_CONDUIT, address(0), WETH, USDC);
     }
 
     /// @dev A new vault starts inside a trial window, so it can trade before anyone pays.

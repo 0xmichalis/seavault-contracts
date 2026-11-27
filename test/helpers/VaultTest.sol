@@ -38,6 +38,7 @@ abstract contract VaultTest is Test {
     address internal feeRecipient = makeAddr("feeRecipient");
     address internal treasury = makeAddr("treasury");
     address internal stranger = makeAddr("stranger");
+    address internal usdc = makeAddr("usdc");
     address internal keeper;
     uint256 internal keeperPk;
     PolicyFixture.Rule internal nftPolicy;
@@ -50,13 +51,13 @@ abstract contract VaultTest is Test {
         nft = new MockERC721();
         edition = new MockERC1155();
         weth = new MockWETH();
-        vault = new Seavault(address(seaport), conduit, owner, keeper, address(subscriptions));
+        vault = new Seavault(
+            address(seaport), conduit, owner, keeper, address(subscriptions), address(weth), usdc
+        );
         nftPolicy = PolicyFixture.Rule(address(nft), FLOOR, CEILING);
         editionPolicy = PolicyFixture.Rule(address(edition), FLOOR, CEILING);
 
         vm.startPrank(owner);
-        vault.setPaymentTokenAllowed(vault.NATIVE_TOKEN(), true);
-        vault.setPaymentTokenAllowed(address(weth), true);
         vault.setPolicyRoot(bytes32(0), collectionPolicyRoot());
         vm.stopPrank();
     }

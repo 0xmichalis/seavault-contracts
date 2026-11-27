@@ -199,13 +199,11 @@ contract SeavaultListingTest is VaultTest {
         );
     }
 
-    function test_rejectsDisallowedPaymentToken() public {
+    function test_rejectsConfiguredUsdcPaymentAgainstNativePriceBounds() public {
         OrderComponents memory order = listing(FLOOR);
-        order.consideration[0] = payment(address(0xbeef), FLOOR, address(vault));
+        order.consideration[0] = payment(usdc, FLOOR, address(vault));
 
-        expectRevertOn(
-            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0xbeef)), order
-        );
+        expectRevertOn(abi.encodeWithSelector(Seavault.InvalidCollectionWitness.selector), order);
     }
 
     function test_rejectsNativeItemCarryingATokenAddress() public {
@@ -214,6 +212,15 @@ contract SeavaultListingTest is VaultTest {
 
         expectRevertOn(
             abi.encodeWithSelector(Seavault.MalformedNativeItem.selector, address(weth)), order
+        );
+    }
+
+    function test_rejectsErc20ItemCarryingTheNativeAddress() public {
+        OrderComponents memory order = listing(FLOOR);
+        order.consideration[0].itemType = ItemType.ERC20;
+
+        expectRevertOn(
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0)), order
         );
     }
 

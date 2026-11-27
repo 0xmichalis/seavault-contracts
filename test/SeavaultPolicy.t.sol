@@ -11,6 +11,9 @@ import {PolicyFixture} from "./helpers/PolicyFixture.sol";
 import {VaultTest} from "./helpers/VaultTest.sol";
 
 contract SeavaultPolicyTest is VaultTest {
+    uint256 private constant USDC_FLOOR = 100e6;
+    uint256 private constant USDC_CEILING = 110e6;
+
     function test_rootChangeIsAtomicWithCounterBump() public {
         bytes32 previous = vault.policyRoot();
         bytes32 next = bytes32(uint256(1));
@@ -80,6 +83,67 @@ contract SeavaultPolicyTest is VaultTest {
         OrderComponents memory order = listing(FLOOR);
         order.offer[0].token = address(edition);
         _expectWitnessRejection(order, witnesses);
+    }
+
+    function test_usdcAndNativeProofsAreCurrencySpecific() public {
+        (
+            Seavault.CollectionWitness[] memory nativeWitnesses,
+            Seavault.CollectionWitness[] memory usdcWitnesses
+        ) = _activateBothCurrencies();
+
+        OrderComponents memory nativeOrder = listing(FLOOR);
+        OrderComponents memory usdcOrder = listing(USDC_CEILING);
+        usdcOrder.consideration[0] = payment(usdc, USDC_CEILING, address(vault));
+
+        _assertValid(nativeOrder, nativeWitnesses);
+        _assertValid(usdcOrder, usdcWitnesses);
+        _expectWitnessRejection(nativeOrder, usdcWitnesses);
+        _expectWitnessRejection(usdcOrder, nativeWitnesses);
+    }
+
+    function test_enforcesUsdcCeilingForListingsAndBids() public {
+        (, Seavault.CollectionWitness[] memory witnesses) = _activateBothCurrencies();
+
+        OrderComponents memory sale = listing(USDC_CEILING - 1);
+        sale.consideration[0] = payment(usdc, USDC_CEILING - 1, address(vault));
+        _expectValidationRejection(
+            abi.encodeWithSelector(
+                Seavault.PriceBelowFloor.selector, USDC_CEILING, USDC_CEILING - 1
+            ),
+            sale,
+            witnesses
+        );
+
+        OrderComponents memory bid = offer(USDC_CEILING + 1);
+        bid.offer[0].token = usdc;
+        _expectValidationRejection(
+            abi.encodeWithSelector(
+                Seavault.PriceAboveCeiling.selector, USDC_CEILING, USDC_CEILING + 1
+            ),
+            bid,
+            witnesses
+        );
+    }
+
+    function test_rejectsNativeAndWrappedFeesOnUsdcOrders() public {
+        (, Seavault.CollectionWitness[] memory witnesses) = _activateBothCurrencies();
+        OrderComponents memory sale = listing(USDC_CEILING);
+        sale.consideration[0] = payment(usdc, USDC_CEILING, address(vault));
+        sale.consideration = withFee(sale.consideration, address(0), 1);
+        _expectValidationRejection(
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0)),
+            sale,
+            witnesses
+        );
+
+        OrderComponents memory bid = offer(USDC_CEILING);
+        bid.offer[0].token = usdc;
+        bid.consideration = withFee(bid.consideration, address(weth), 1);
+        _expectValidationRejection(
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(weth)),
+            bid,
+            witnesses
+        );
     }
 
     function test_rejectsTamperedFloorSaltAndProof() public {
@@ -162,6 +226,26 @@ contract SeavaultPolicyTest is VaultTest {
         vault.setPolicyRoot(active, root);
     }
 
+    function _activateBothCurrencies()
+        private
+        returns (
+            Seavault.CollectionWitness[] memory nativeWitnesses,
+            Seavault.CollectionWitness[] memory usdcWitnesses
+        )
+    {
+        PolicyFixture.Rule memory usdcRule =
+            PolicyFixture.Rule(address(nft), USDC_FLOOR, USDC_CEILING);
+        bytes32 nativeLeaf = PolicyFixture.leaf(nftPolicy);
+        bytes32 usdcLeaf = PolicyFixture.usdcLeaf(usdcRule);
+        bytes32 previous = vault.policyRoot();
+        vm.prank(owner);
+        vault.setPolicyRoot(previous, Hashes.commutativeKeccak256(nativeLeaf, usdcLeaf));
+        return (
+            PolicyFixture.withSibling(nftPolicy, usdcLeaf),
+            PolicyFixture.withSibling(usdcRule, nativeLeaf)
+        );
+    }
+
     function _assertValid(
         OrderComponents memory order,
         Seavault.CollectionWitness[] memory witnesses
@@ -178,9 +262,19 @@ contract SeavaultPolicyTest is VaultTest {
         OrderComponents memory order,
         Seavault.CollectionWitness[] memory witnesses
     ) private {
+        _expectValidationRejection(
+            abi.encodeWithSelector(Seavault.InvalidCollectionWitness.selector), order, witnesses
+        );
+    }
+
+    function _expectValidationRejection(
+        bytes memory reason,
+        OrderComponents memory order,
+        Seavault.CollectionWitness[] memory witnesses
+    ) private {
         bytes32 digest = digestOf(order);
         bytes memory payload = abi.encode(order, signatureFor(order, keeperPk), witnesses);
-        vm.expectRevert(Seavault.InvalidCollectionWitness.selector);
+        vm.expectRevert(reason);
         vault.isValidSignature(digest, payload);
     }
 }

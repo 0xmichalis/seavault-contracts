@@ -21,7 +21,7 @@ import {CodeStore} from "./libraries/CodeStore.sol";
 /// @dev Vaults are real deployments, not proxies: the vault keeps its immutable Seaport wiring and
 ///      its constructor-time domain-separator check. Deployment goes through CreateX's CREATE3, so a
 ///      vault's address depends only on its owner and salt — identical on every chain even though
-///      the factory feeds each chain's own Seaport and conduit into the constructor.
+///      the factory feeds each chain's Seaport, conduit and payment tokens into the constructor.
 ///
 ///      The vault's creation code lives in a store contract the constructor writes, not in the
 ///      factory's own bytecode, so the vault can grow without pushing the factory past the
@@ -54,6 +54,12 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
 
     /// @notice Conduit every vault from this factory approves for settlement.
     address public immutable conduit;
+
+    /// @notice Wrapped native token enabled at creation for every vault from this factory.
+    address public immutable wNative;
+
+    /// @notice USDC address passed to every vault, or zero when the chain has no configured USDC.
+    address public immutable usdc;
 
     /// @notice Vault deployed for an owner under a given salt, zero if not created yet. Keyed by the
     ///         owner that created it: a later ownership transfer does not move it, so read the
@@ -105,6 +111,7 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
     );
 
     error ZeroAddress();
+    error DuplicatePaymentToken(address token);
     error VaultAlreadyExists(bytes32 salt);
     error VaultAlreadyOwned(address owner);
     error NotAVault(address vault);
@@ -115,10 +122,17 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
 
     /// @dev The subscription ships free, so the factory is usable the moment it is deployed; the
     ///      owner sets a price when the service starts charging.
-    constructor(address seaport_, address conduit_, address owner_) Ownable(owner_) {
-        if (seaport_ == address(0) || conduit_ == address(0)) revert ZeroAddress();
+    constructor(address seaport_, address conduit_, address owner_, address wNative_, address usdc_)
+        Ownable(owner_)
+    {
+        if (seaport_ == address(0) || conduit_ == address(0) || wNative_ == address(0)) {
+            revert ZeroAddress();
+        }
+        if (wNative_ == usdc_) revert DuplicatePaymentToken(wNative_);
         seaport = seaport_;
         conduit = conduit_;
+        wNative = wNative_;
+        usdc = usdc_;
         vaultCodeStore = CodeStore.write(type(Seavault).creationCode);
         subscriptionRecipient = owner_;
         trialPeriod = DEFAULT_TRIAL_PERIOD;
@@ -143,7 +157,9 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
                     _createXSalt(msg.sender, salt),
                     abi.encodePacked(
                         CodeStore.read(vaultCodeStore),
-                        abi.encode(seaport, conduit, msg.sender, keeper, address(this))
+                        abi.encode(
+                            seaport, conduit, msg.sender, keeper, address(this), wNative, usdc
+                        )
                     )
                 ))
         );

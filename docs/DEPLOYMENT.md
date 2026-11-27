@@ -4,8 +4,8 @@ Both the factory and the vaults it creates go through [CreateX](https://github.c
 at `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed`, which is deployed on every chain these contracts
 target (ethereum, base, arbitrum, optimism, matic, zora, shape). With CREATE3 the address depends on the salt
 alone, never on the init code, so **the same address is used on every chain even though constructor
-arguments differ** — the factory bakes in each chain's own Seaport and conduit, and each vault its own
-owner and keeper.
+arguments differ**. The factory fixes each chain's Seaport, conduit, wrapped native token and
+USDC address. Each vault receives those settings along with its owner and keeper.
 
 Both salts are `bytes20(sender) ++ 0x00 ++ bytes11(digest)`, which asks CreateX for a permissioned,
 chain-independent deploy: only that sender can use the salt (nobody can squat an address on a chain
@@ -19,12 +19,15 @@ salt seed on every chain** — the script aborts if the broadcaster does not mat
 ```sh
 # 1. Predict the factory address; no key needed, and any chain gives the same answer
 forge script script/DeploySeavaultFactory.s.sol --sig "predict(address,string)" \
-  0xDEPLOYER seavault-factory-v1 --rpc-url base
+  0xDEPLOYER seavault-factory-v2 --rpc-url base
 
 # 2. Deploy the factory, per chain. FACTORY_OWNER (default: the deployer) becomes the fee
 #    admin and initial fee recipient
-forge script script/DeploySeavaultFactory.s.sol --rpc-url base --account deployer \
-  --broadcast --verify
+FACTORY_SALT_SEED=seavault-factory-v2 \
+  W_NATIVE=0x4200000000000000000000000000000000000006 \
+  USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
+  forge script script/DeploySeavaultFactory.s.sol --rpc-url base --account deployer \
+    --broadcast --verify
 
 # 3. Create a vault, per chain. Owner is the broadcasting key
 FACTORY=0xFACTORY KEEPER=0xKEEPER VAULT_SALT=primary \
@@ -36,9 +39,15 @@ cast call 0xFACTORY "vaultOf(address,bytes32)(address)" 0xOWNER $(cast keccak pr
 ```
 
 `SEAPORT` and `CONDUIT` default to Seaport 1.6 (`0x0000…eB395`) and OpenSea's conduit
-(`0x1E00…3c71`); override them per chain if OpenSea points elsewhere. A new factory salt seed yields a
-fresh factory and a fresh set of vault addresses, which is how you roll out a new vault version; a new
-vault salt can create a replacement after the owner transfers their current vault away.
+(`0x1E00…3c71`). Override them per chain if OpenSea points elsewhere. Set `W_NATIVE` to
+the chain's canonical wrapped native token. Set `USDC` to the chain's
+[Circle-issued USDC address](https://developers.circle.com/stablecoins/usdc-contract-addresses)
+where one exists. On a chain without Circle-issued USDC, leave `USDC` unset so it defaults to
+zero.
+
+A new factory salt seed yields a fresh factory and a fresh set of vault addresses, which is how
+you roll out a new vault version. A new vault salt can create a replacement after the owner
+transfers their current vault away.
 A wallet can own only one vault per factory per chain, including vaults received through ownership transfers.
 
 `--verify` uses the `[etherscan]` config and a single `ETHERSCAN_API_KEY`. Zora and Shape are not on
@@ -58,6 +67,8 @@ address on that chain for good.
 
 ```sh
 FACTORY_SALT_SEED=seavault-factory-e2e-1 \
+  W_NATIVE=0x4200000000000000000000000000000000000006 \
+  USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
   forge script script/DeploySeavaultFactory.s.sol --rpc-url base --browser --broadcast
 ```
 
@@ -67,8 +78,8 @@ After the deployment confirms, generate its public record with the same contract
 `FACTORY_SALT_SEED` used to deploy:
 
 ```sh
-forge script --root . script/DeploySeavaultFactory.s.sol --sig "record()" \
-  --rpc-url ethereum
+FACTORY_SALT_SEED=seavault-factory-v2 \
+  forge script --root . script/DeploySeavaultFactory.s.sol --sig "record()" --rpc-url base
 ```
 
 This read-only RPC step needs no wallet. It reads the latest broadcast file, requires a successful
@@ -78,9 +89,10 @@ separately because the deployment script executes before transactions
 are mined. Pending or failed transactions produce no record.
 
 Commit the resulting `deployments/<chain-id>/<factory-address>.json`. It includes the transaction,
-block, source commit, constructor addresses, salt seed and both code hashes. Runtime code hashes
-can be used for Listoor's `VAULT_FACTORY_CODEHASHES`; the vault code-store hash identifies the
-supported vault version. Records describe deployment-time values, including the initial owner.
+block, source commit, constructor addresses (including `wNative` and `usdc`), salt seed and both
+code hashes. Runtime code hashes can be used for Listoor's `VAULT_FACTORY_CODEHASHES`. The vault
+code-store hash identifies the supported vault version. Records describe deployment-time values,
+including the initial owner.
 The ignored broadcast and cache directories remain local.
 
 For an earlier saved broadcast, use the `record(string)` entry point with its file path instead of
@@ -88,43 +100,44 @@ For an earlier saved broadcast, use the `record(string)` entry point with its fi
 
 ## Post-deploy checklist, per chain
 
-Everything below is called on the vault by its owner.
+Payment support is fixed at deployment. The native asset and the factory's `wNative` share
+native-denominated price bounds. The factory's `usdc`, when configured, uses separate
+USDC-denominated bounds in the same policy root.
 
-1. `setPaymentTokenAllowed(address(0), true)` for native ETH and `setPaymentTokenAllowed(WETH, true)`.
-   Allow nothing else: floors and ceilings are denominated in whichever allowed token an order
-   uses, so every allowed token has to be worth the same.
-2. Build and save the [collection policy snapshot](ARCHITECTURE.md#collection-policy-snapshots)
+The vault owner sets the parameters below.
+
+1. Build and save the [collection policy snapshot](ARCHITECTURE.md#collection-policy-snapshots)
    with the listing floors and bid or buy ceilings. Activate its root with
    `setPolicyRoot(expectedRoot, newRoot)`. Use the root of zero as `expectedRoot` for a new vault.
-3. Call `setTokenListingFloor` where a token needs its own bound. Include the collection in the
-   snapshot even if it has a zero default floor and ceiling. A positive floor, including an override,
-   is raised to at least the ceiling when the vault validates listings.
-4. `setConduitApprovalForAll(collection, true)` for every collection the vault sells from.
-5. `setConduitAllowance(WETH, amount)` if the vault will bid, or buy listings priced in WETH. Keep it
-   finite: it caps what a compromised keeper can spend in WETH, and the keeper can wrap the vault's
-   native balance into WETH.
-6. `setNativeBuyAllowance(amount)` if the vault will buy listings priced in ETH. Keep it finite too:
-   it caps what buys spend in ETH. Each buy draws it down, so top it up as needed.
-7. Adjust `setMaxOrderDuration` (default 30 days) and `setMaxFeeBps` (default 1000 = 10%) if the
+2. Call `setTokenListingFloor` where a token needs its own native-denominated bound. Include a native
+   row for the collection even if it has a zero default floor and ceiling. A positive floor,
+   including an override, is raised to at least the ceiling when the vault validates listings.
+3. Call `setConduitApprovalForAll(collection, true)` for every collection the vault sells from.
+4. Call `setConduitAllowance` with a finite amount for each of wrapped native and USDC the vault
+   will bid or buy in. The allowance caps spending in the approved token. The keeper can wrap
+   the vault's native balance to fund wrapped-token orders.
+5. Call `setNativeBuyAllowance` with a finite amount if the vault will buy listings priced in the
+   native asset. Each buy draws the allowance down, so top it up as needed.
+6. Adjust `setMaxOrderDuration` (default 30 days) and `setMaxFeeBps` (default 1000 = 10%) if the
    defaults do not fit the marketplace's fee structure. The duration caps both how long an order
    may run and how far ahead it may start, so an order Seaport has validated never carries old
    policy for more than twice the duration it was validated under; lowering it later does not
    shorten those orders. The keeper should read `maxFeeBps` before posting: a listing whose
    marketplace fee plus creator earnings exceed it fails validation.
-8. Move the NFTs, the WETH and the ETH buys spend in, then point the keeper at the vault and watch it
-   in dry-run mode before letting it post orders. Give the keeper the snapshot whose root matches
-   `policyRoot()` and keep a private copy for recovery.
-9. To retain full managed keeper access after the trial, pay `extendSubscription` on the factory
+7. Move the NFTs and the funds for bids and buys into the vault, then point the keeper at it and
+   watch it in dry-run mode before letting it post orders. Give the keeper the snapshot whose root
+   matches `policyRoot()` and keep a private copy for recovery.
+8. To retain full managed keeper access after the trial, pay `extendSubscription` on the factory
    from any wallet. After expiry, the keeper serves free-tier listings and offers and pauses snipes.
    A zero effective subscription price grants full access.
-10. Call `setAutoWithdrawEnabled(true)` if the keeper should return ETH and ERC20 balances to the
-    current owner. Configure the keeper to submit `autoWithdrawETH(amount)` and
-    `autoWithdrawERC20(token, amount)` transactions. The owner can opt out at any time, and
-    ownership changes clear the opt-in.
+9. Call `setAutoWithdrawEnabled(true)` if the keeper should return ETH and ERC20 balances to the
+   current owner. Configure the keeper to submit `autoWithdrawETH(amount)` and
+   `autoWithdrawERC20(token, amount)` transactions. The owner can opt out at any time, and
+   ownership changes clear the opt-in.
 
 ## Factory versions
 
-The factory and vault code are immutable. Changes to contract logic or the Seaport and conduit
-addresses require a new deployment with a fresh `FACTORY_SALT_SEED`, used consistently across
-chains. Use each vault's `factory()` address to verify its membership.
+The factory and vault code are immutable. Changes to the contract logic or a factory's
+constructor addresses require a new deployment with a fresh `FACTORY_SALT_SEED`, used
+consistently across chains. Use each vault's `factory()` address to verify its membership.
 

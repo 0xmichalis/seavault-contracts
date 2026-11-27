@@ -13,7 +13,7 @@ contract SeavaultInvariantForkTest is BaseFork {
 
     function setUp() public {
         forkBase();
-        handler = new VaultInvariantHandler(SEAPORT, OPENSEA_CONDUIT, OPENSEA_CONDUIT_KEY);
+        handler = new VaultInvariantHandler(SEAPORT, OPENSEA_CONDUIT, OPENSEA_CONDUIT_KEY, USDC);
         // Start with live and cached orders so replay attacks do not depend on posting first.
         uint256 cached = handler.postOrder(false, true, 0, UNIT, 0);
         assertTrue(handler.validateOrder(cached));

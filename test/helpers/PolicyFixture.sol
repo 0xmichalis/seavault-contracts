@@ -21,11 +21,15 @@ library PolicyFixture {
     }
 
     function leaf(Rule memory rule) internal pure returns (bytes32) {
-        return keccak256(
-            bytes.concat(
-                keccak256(abi.encode(rule.collection, rule.floor, rule.ceiling, _salt(rule)))
-            )
-        );
+        return keccak256(abi.encode(_leafPreimage(rule)));
+    }
+
+    function usdcLeaf(Rule memory rule) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(_leafPreimage(rule), hex"01"));
+    }
+
+    function _leafPreimage(Rule memory rule) private pure returns (bytes32) {
+        return keccak256(abi.encode(rule.collection, rule.floor, rule.ceiling, _salt(rule)));
     }
 
     function root(Rule memory first, Rule memory second) internal pure returns (bytes32) {
@@ -37,6 +41,16 @@ library PolicyFixture {
     function single(Rule memory rule) internal pure returns (Seavault.CollectionWitness[] memory) {
         Rule memory absent;
         return _witnesses(rule, absent, true, false);
+    }
+
+    function withSibling(Rule memory rule, bytes32 sibling)
+        internal
+        pure
+        returns (Seavault.CollectionWitness[] memory witnesses)
+    {
+        witnesses = single(rule);
+        witnesses[0].siblings = new bytes32[](1);
+        witnesses[0].siblings[0] = sibling;
     }
 
     function forOrder(Rule memory first, Rule memory second, OrderComponents memory order)

@@ -174,12 +174,20 @@ contract SeavaultBuyTest is VaultTest {
 
     function test_rejectsPaymentTokenNotAllowed() public {
         AdvancedOrder memory order = sellersListing(CEILING);
-        vm.prank(owner);
-        vault.setPaymentTokenAllowed(address(0), false);
+        order.parameters.consideration[0] = payment(address(0xbeef), CEILING, seller);
 
         vm.expectRevert(
-            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0))
+            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0xbeef))
         );
+        vm.prank(keeper);
+        vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
+    }
+
+    function test_rejectsUsdcTipOnNativeBuy() public {
+        AdvancedOrder memory order = sellersListing(CEILING - 1);
+        order.parameters.consideration = withFee(order.parameters.consideration, usdc, 1);
+
+        vm.expectRevert(abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, usdc));
         vm.prank(keeper);
         vault.buy(order, CONDUIT_KEY, witnessesForBuy(order));
     }

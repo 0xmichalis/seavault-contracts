@@ -19,6 +19,11 @@ contract SeavaultAdminTest is VaultTest {
         assertEq(address(vault.factory()), address(subscriptions));
         assertEq(vault.maxOrderDuration(), 30 days);
         assertEq(vault.maxFeeBps(), 1000);
+        assertTrue(vault.paymentTokenAllowed(address(0)));
+        assertTrue(vault.paymentTokenAllowed(address(weth)));
+        assertTrue(vault.paymentTokenAllowed(usdc));
+        assertFalse(vault.paymentTokenAllowed(address(0xbeef)));
+        assertEq(vault.nativeBuyAllowance(), 0);
 
         (, bytes32 domainSeparator,) = seaport.information();
         assertEq(vault.seaportDomainSeparator(), domainSeparator);
@@ -35,24 +40,66 @@ contract SeavaultAdminTest is VaultTest {
                 keccak256("not seaport")
             )
         );
-        new Seavault(address(impostor), conduit, owner, keeper, address(subscriptions));
+        new Seavault(
+            address(impostor), conduit, owner, keeper, address(subscriptions), address(weth), usdc
+        );
     }
 
     function test_rejectsZeroAddressesAtDeployment() public {
         vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(address(0), conduit, owner, keeper, address(subscriptions));
+        new Seavault(
+            address(0), conduit, owner, keeper, address(subscriptions), address(weth), usdc
+        );
 
         vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(address(seaport), address(0), owner, keeper, address(subscriptions));
+        new Seavault(
+            address(seaport), address(0), owner, keeper, address(subscriptions), address(weth), usdc
+        );
 
         vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(address(seaport), conduit, owner, address(0), address(subscriptions));
+        new Seavault(
+            address(seaport),
+            conduit,
+            owner,
+            address(0),
+            address(subscriptions),
+            address(weth),
+            usdc
+        );
 
         vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(address(seaport), conduit, owner, keeper, address(0));
+        new Seavault(address(seaport), conduit, owner, keeper, address(0), address(weth), usdc);
+
+        vm.expectRevert(Seavault.ZeroAddress.selector);
+        new Seavault(
+            address(seaport), conduit, owner, keeper, address(subscriptions), address(0), usdc
+        );
 
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-        new Seavault(address(seaport), conduit, address(0), keeper, address(subscriptions));
+        new Seavault(
+            address(seaport),
+            conduit,
+            address(0),
+            keeper,
+            address(subscriptions),
+            address(weth),
+            usdc
+        );
+    }
+
+    function test_canDeployWithoutUsdc() public {
+        vm.chainId(1);
+        Seavault freshVault = new Seavault(
+            address(seaport),
+            conduit,
+            owner,
+            keeper,
+            address(subscriptions),
+            address(weth),
+            address(0)
+        );
+        assertTrue(freshVault.paymentTokenAllowed(address(weth)));
+        assertFalse(freshVault.paymentTokenAllowed(usdc));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -90,14 +137,12 @@ contract SeavaultAdminTest is VaultTest {
         setNftPolicy(5 ether, 3 ether);
         vm.startPrank(owner);
         vault.setTokenListingFloor(address(nft), TOKEN_ID, 9 ether);
-        vault.setPaymentTokenAllowed(address(0xbeef), true);
         vault.setMaxOrderDuration(1 days);
         vault.setMaxFeeBps(2500);
         vm.stopPrank();
 
         assertEq(vault.policyRoot(), collectionPolicyRoot());
         assertEq(vault.tokenListingFloor(address(nft), TOKEN_ID), 9 ether);
-        assertTrue(vault.paymentTokenAllowed(address(0xbeef)));
         assertEq(vault.maxOrderDuration(), 1 days);
         assertEq(vault.maxFeeBps(), 2500);
     }
@@ -116,8 +161,6 @@ contract SeavaultAdminTest is VaultTest {
         vault.setPolicyRoot(bytes32(0), bytes32(uint256(1)));
         _expectUnauthorized();
         vault.setTokenListingFloor(address(nft), TOKEN_ID, 1);
-        _expectUnauthorized();
-        vault.setPaymentTokenAllowed(address(weth), false);
         _expectUnauthorized();
         vault.setMaxOrderDuration(1);
         _expectUnauthorized();
@@ -210,14 +253,12 @@ contract SeavaultAdminTest is VaultTest {
         assertEq(address(vault).balance, 2 ether);
     }
 
-    function test_wrapRejectsTokensOutsideTheAllowlist() public {
+    function test_wrapRejectsUsdc() public {
         vm.deal(address(vault), 1 ether);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, address(0xbeef))
-        );
+        vm.expectRevert(abi.encodeWithSelector(Seavault.PaymentTokenNotAllowed.selector, usdc));
         vm.prank(keeper);
-        vault.wrapETH(address(0xbeef), 1 ether);
+        vault.wrapETH(usdc, 1 ether);
     }
 
     function test_wrapRejectsStrangers() public {
