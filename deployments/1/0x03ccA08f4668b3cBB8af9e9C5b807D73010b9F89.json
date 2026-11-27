@@ -1,0 +1,17 @@
+{
+  "blockHash": "0x0c291f27ba35bbdd91d1cebe1b2f4c1d23a5d79c675d43d426663ab65823fbc2",
+  "blockNumber": 26508927,
+  "chainId": 1,
+  "conduit": "0x1E0049783F008A0085193E00003D00cd54003c71",
+  "createX": "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed",
+  "deployer": "0xd2Be832911A252302bAc09e30Fc124A405E142DF",
+  "factory": "0x03ccA08f4668b3cBB8af9e9C5b807D73010b9F89",
+  "factoryRuntimeCodeHash": "0x104b722ecd4f21b59e396f28ad481b1185800ec5d659ca7212c5b2a1e49d5838",
+  "initialOwner": "0xd2Be832911A252302bAc09e30Fc124A405E142DF",
+  "saltSeed": "seavault-factory-v1",
+  "seaport": "0x0000000000000068F116a894984e2DB1123eB395",
+  "sourceCommit": "a2f6481",
+  "transactionHash": "0xbb9b38071826701b24508f682ab9df87de3fb01beb75a94e9119e7fe785b9fc0",
+  "vaultCodeStore": "0x163fc2D7e131CAc7721A86De79a90beB4046A8ba",
+  "vaultCodeStoreHash": "0xdedc3a430b5b51a02bcb01fc5c58e5c7bcd3d4b5971c518431a6f8dfe16a34f8"
+}
