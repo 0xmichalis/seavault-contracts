@@ -1,0 +1,19 @@
+{
+  "blockHash": "0xd76e5b9428a49c3d9f410776a80db6fe8c15254053e186b79a5ee5c2a87ee4e9",
+  "blockNumber": 26512967,
+  "chainId": 1,
+  "conduit": "0x1E0049783F008A0085193E00003D00cd54003c71",
+  "createX": "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed",
+  "deployer": "0xd2Be832911A252302bAc09e30Fc124A405E142DF",
+  "factory": "0x56C3fF408c6DcBB048973d02d00667A0BCe2A9C0",
+  "factoryRuntimeCodeHash": "0x871aa31e17de54ba868ad37ddcda9bb202c9616d995f39fa7b8469f0e169be2f",
+  "initialOwner": "0xd2Be832911A252302bAc09e30Fc124A405E142DF",
+  "saltSeed": "seavault-factory-v3",
+  "seaport": "0x0000000000000068F116a894984e2DB1123eB395",
+  "sourceCommit": "fad6f56",
+  "transactionHash": "0xe2253585ee07717cf1d2ae0db800fd2f20ca263e89f1f3e035d401b0d2b55315",
+  "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "vaultImplementation": "0x0BD0ee0852A359dF32CB4bb73178abB5bC75E564",
+  "vaultImplementationCodeHash": "0x1cbe672c8452af22df1a0fee16890ab944b176c1a97e9e0b445fe5a48b5b8705",
+  "wNative": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+}
