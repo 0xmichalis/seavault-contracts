@@ -146,13 +146,11 @@ contract SeavaultAdminTest is VaultTest {
     function test_setPolicy() public {
         setNftPolicy(5 ether, 3 ether);
         vm.startPrank(owner);
-        vault.setTokenListingFloor(address(nft), TOKEN_ID, 9 ether);
         vault.setMaxOrderDuration(1 days);
         vault.setMaxFeeBps(2500);
         vm.stopPrank();
 
         assertEq(vault.policyRoot(), collectionPolicyRoot());
-        assertEq(vault.tokenListingFloor(address(nft), TOKEN_ID), 9 ether);
         assertEq(vault.maxOrderDuration(), 1 days);
         assertEq(vault.maxFeeBps(), 2500);
     }
@@ -169,8 +167,6 @@ contract SeavaultAdminTest is VaultTest {
         vault.setKeeper(keeper);
         _expectUnauthorized();
         vault.setPolicyRoot(bytes32(0), bytes32(uint256(1)));
-        _expectUnauthorized();
-        vault.setTokenListingFloor(address(nft), TOKEN_ID, 1);
         _expectUnauthorized();
         vault.setMaxOrderDuration(1);
         _expectUnauthorized();

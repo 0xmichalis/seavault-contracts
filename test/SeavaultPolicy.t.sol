@@ -162,12 +162,6 @@ contract SeavaultPolicyTest is VaultTest {
         _expectWitnessRejection(order, witnesses);
     }
 
-    function test_tokenFloorCannotBeUsedWithoutAProvenCeiling() public {
-        vm.prank(owner);
-        vault.setTokenListingFloor(address(nft), TOKEN_ID, 1);
-        _expectWitnessRejection(listing(1), new Seavault.CollectionWitness[](0));
-    }
-
     function test_requiresSortedDistinctWitnesses() public {
         OrderComponents memory order = listing(2 * FLOOR);
         OfferItem memory first = order.offer[0];

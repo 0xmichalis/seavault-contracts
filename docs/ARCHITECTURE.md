@@ -20,8 +20,8 @@ ownership changes. Every vault is a separate contract with its own assets, owner
   the keeper's ECDSA signature, and the collection witnesses. The vault re-derives the digest
   from the supplied components and checks it matches the one Seaport is about to execute.
 - The vault verifies the witnesses against the owner's active `policyRoot` and applies the proven
-  collection **listing floors** and **offer ceilings** to the order items. Native per-token floor
-  overrides, the sale fee cap and the maximum order duration are read from storage.
+  collection **listing floors** and **offer ceilings** to the order items. A proven zero floor
+  requires an [owner-signed listing permit](#listing-permits) for each offered NFT in that collection.
 - The fixed payment currencies are the native asset and the factory's `wNative` and `usdc`.
   The native asset and its wrapper use the same price units. A USDC order uses USDC for
   every payment item covered by the vault's policy, including fees and direct-buy tips.
@@ -55,8 +55,8 @@ ownership changes. Every vault is a separate contract with its own assets, owner
   the conduit allowance; those two are the hard cap on what a compromised keeper can spend. The
   vault's own listings are refused.
 - Residual risk: the keeper key can sell at the floor, or bid or buy at the ceiling until the
-  allowances run out. **Floors are loss bounds, not live prices** — repricing below a floor needs an
-  owner transaction.
+  allowances run out. A lower floor requires the owner to update the policy root or sign a new
+  permit, according to the collection's listing policy.
 - Only the owner can choose a withdrawal recipient. Owners can opt into keeper-triggered
   ETH/ERC20 withdrawals to the current owner; NFTs remain owner-only. The only operator ever
   approved is Seaport's conduit.
@@ -106,12 +106,33 @@ the owner and their keepers can rebuild proofs independently. Use the following 
 A witness contains the collection, amounts, salt and up to ten sibling hashes from leaf to root.
 Send one witness in the order's denomination per distinct NFT collection, in ascending address
 order. Use the NFT offers when listing or buying, and the NFT consideration when bidding.
-For native orders, a collection with token floors only needs an explicit native row with a zero
-default floor and its configured ceiling, even when that ceiling is zero. The vault applies a
-nonzero token override before raising the resulting floor to the proven ceiling. USDC listings
-use their collection's USDC floor and ceiling.
 The salts protect unrevealed collection rows against guessing from a root or sibling hash.
-Token-level overrides and global vault limits are readable on-chain.
+
+### Listing permits
+
+Set a collection's floor to zero in the row for the desired denomination. This makes a permit
+mandatory for each listing item from that collection. Include the row even if its ceiling is
+also zero. A positive collection floor authorizes keeper listings under the collection policy.
+
+The owner signs the following EIP-712 type under the domain
+`{name: "Seavault", version: "1", chainId, verifyingContract: vault}`.
+
+```text
+ListingPermit(address collection,uint256 tokenId,address currency,uint256 floorPerUnit,uint256 deadline,uint256 counter)
+```
+
+Use `address(0)` as the currency for native and wrapped native listings, or the factory's USDC
+address for USDC listings. Read the current Seaport counter for the vault. Set a positive
+`floorPerUnit` in the currency's base units and a Unix timestamp in seconds as the deadline.
+The vault accepts EOA and ERC-1271 owner signatures. Give the signature, floor and deadline to
+the keeper.
+
+The keeper can reuse the permit for orders that end at or before the deadline. The vault requires
+net proceeds of at least the greater of the signed floor and the proven collection ceiling, per
+unit. A new permit leaves earlier permits usable through their deadlines. Bump the Seaport counter
+to revoke permits and outstanding orders immediately, then sign new permits against the new
+counter. Cancel an individual order with `cancelOrders` when the permit can continue to authorize
+repricing.
 
 ### On-chain proof disclosure
 
@@ -119,7 +140,8 @@ Token-level overrides and global vault limits are readable on-chain.
   new roots.
 - **A buyer takes our listing or a seller accepts our offer.** The taker's wallet submits the
   Seaport fill and pays gas. If the order has yet to be validated, the fill carries the signature.
-  Seaport calls the vault's `isValidSignature` to check the witnesses before settlement.
+  Seaport calls the vault's `isValidSignature` to check the witnesses and any permits before
+  settlement.
 - **A signed order can be prevalidated on-chain.** Anyone holding the signed order can pay to
   submit it to Seaport's `validate`, which checks the signature and saves the validation result.
   This is optional. Normal Listoor posting leaves the on-chain check to the taker's fill. After
@@ -130,7 +152,8 @@ Token-level overrides and global vault limits are readable on-chain.
   checks the witnesses and pays Seaport to deliver the NFTs to the owner.
 
 Any included transaction carrying a witness reveals the collection, floor, ceiling, salt and
-sibling hashes in its input, even if execution reverts.
+sibling hashes in its input, even if execution reverts. A listing permit in the transaction
+reveals its floor, deadline and owner signature.
 
 ## Subscription
 
@@ -229,7 +252,8 @@ leaves existing sessions active until they expire or OpenSea revokes them.
 
 ## Signature blob
 
-The keeper signs Seaport's order digest and attaches the collection witnesses. In ethers:
+The keeper signs Seaport's order digest with a 65-byte ECDSA signature and attaches the collection
+witnesses. Encode that signature in the middle field for ordinary orders.
 
 ```ts
 const ORDER_COMPONENTS_TYPE =
@@ -242,10 +266,20 @@ const signature = AbiCoder.defaultAbiCoder().encode(
 );
 ```
 
+For a listing with permits, substitute the following ABI-encoded value for the middle field.
+Include one permit for each offered item with a proven zero floor, in offer order.
+
+```ts
+const keeperSigningData = AbiCoder.defaultAbiCoder().encode(
+    ['bytes', '(uint256 floorPerUnit,uint256 deadline,bytes signature)[]'],
+    [ecdsaSignature, permits]
+);
+```
+
 Sign orders one at a time. Seaport hands the vault the single-order digest, so a signature over a
 bulk-order root never verifies.
 
-Each collection witness increases the signature size. Verify acceptance at the intended
+Collection witnesses and listing permits increase the signature size. Verify acceptance at the intended
 signature sizes before activating a new factory on a live integration.
 
 For a gasless cancel, the keeper signs OpenSea's `OrderHash` message instead and sends

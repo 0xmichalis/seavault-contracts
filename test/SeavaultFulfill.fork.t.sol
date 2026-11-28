@@ -3,6 +3,9 @@ pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Hashes} from "@openzeppelin/contracts/utils/cryptography/Hashes.sol";
+import {
+    ConsiderationEventsAndErrors
+} from "seaport-types/src/interfaces/ConsiderationEventsAndErrors.sol";
 import {ItemType, OrderType} from "seaport-types/src/lib/ConsiderationEnums.sol";
 import {
     AdvancedOrder,
@@ -17,6 +20,7 @@ import {Seavault} from "../src/Seavault.sol";
 import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {SeaportOrderHash} from "../src/libraries/SeaportOrderHash.sol";
 import {BaseFork} from "./helpers/BaseFork.sol";
+import {ListingPermitFixture} from "./helpers/ListingPermitFixture.sol";
 import {PolicyFixture} from "./helpers/PolicyFixture.sol";
 import {MockERC721} from "./mocks/TokenMocks.sol";
 
@@ -72,6 +76,40 @@ contract SeavaultFulfillForkTest is BaseFork {
 
         assertEq(nft.ownerOf(TOKEN_ID), taker);
         assertEq(address(vault).balance, PRICE);
+    }
+
+    function test_takerFillsVaultListingWithPermit() public {
+        uint256 ownerPk = _activatePermitListings();
+        Order memory order = _signedWithPermit(_listing(PRICE), ownerPk);
+
+        vm.prank(taker);
+        assertTrue(SEAPORT.fulfillOrder{value: PRICE}(order, bytes32(0)));
+
+        assertEq(nft.ownerOf(TOKEN_ID), taker);
+        assertEq(address(vault).balance, PRICE);
+    }
+
+    function test_prevalidatedListingExpiresAtPermitDeadline() public {
+        uint256 ownerPk = _activatePermitListings();
+        OrderComponents memory components = _listing(PRICE);
+        Order[] memory orders = new Order[](1);
+        orders[0] = _signedWithPermit(components, ownerPk);
+        assertTrue(SEAPORT.validate(orders));
+        (bool isValidated,,,) = SEAPORT.getOrderStatus(SEAPORT.getOrderHash(components));
+        assertTrue(isValidated);
+
+        vm.warp(components.endTime);
+        orders[0].signature = "";
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ConsiderationEventsAndErrors.InvalidTime.selector,
+                components.startTime,
+                components.endTime
+            )
+        );
+        vm.prank(taker);
+        SEAPORT.fulfillOrder{value: PRICE}(orders[0], bytes32(0));
+        assertEq(nft.ownerOf(TOKEN_ID), address(vault));
     }
 
     function test_takerFillsVaultUsdcListing() public {
@@ -549,6 +587,43 @@ contract SeavaultFulfillForkTest is BaseFork {
             conduitKey: OPENSEA_CONDUIT_KEY,
             counter: SEAPORT.getCounter(address(vault))
         });
+    }
+
+    function _activatePermitListings() private returns (uint256 ownerPk) {
+        address permitOwner;
+        (permitOwner, ownerPk) = makeAddrAndKey("seavault-fulfill-permit-owner");
+        vm.prank(owner);
+        vault.transferOwnership(permitOwner);
+        bytes32 previous = vault.policyRoot();
+        policy.floor = 0;
+        vm.startPrank(permitOwner);
+        vault.acceptOwnership();
+        vault.setPolicyRoot(previous, PolicyFixture.leaf(policy));
+        vm.stopPrank();
+        nft.mint(address(vault), TOKEN_ID);
+    }
+
+    function _signedWithPermit(OrderComponents memory components, uint256 ownerPk)
+        private
+        view
+        returns (Order memory order)
+    {
+        bytes32 digest = ListingPermitFixture.digest(
+            address(vault),
+            components.offer[0],
+            address(0),
+            PRICE,
+            components.endTime,
+            components.counter
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPk, digest);
+        Seavault.ListingPermit[] memory permits = new Seavault.ListingPermit[](1);
+        permits[0] = Seavault.ListingPermit(PRICE, components.endTime, abi.encodePacked(r, s, v));
+
+        order = _signed(components);
+        (, bytes memory keeperSignature, Seavault.CollectionWitness[] memory witnesses) =
+            abi.decode(order.signature, (OrderComponents, bytes, Seavault.CollectionWitness[]));
+        order.signature = abi.encode(components, abi.encode(keeperSignature, permits), witnesses);
     }
 
     /// @dev Wraps components into the order Seaport takes, signed the way listoor will sign it.

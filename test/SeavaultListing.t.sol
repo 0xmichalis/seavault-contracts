@@ -122,37 +122,6 @@ contract SeavaultListingTest is VaultTest {
         expectRevertOn(abi.encodeWithSelector(Seavault.InvalidCollectionWitness.selector), order);
     }
 
-    function test_perTokenFloorOverridesCollectionFloor() public {
-        vm.prank(owner);
-        vault.setTokenListingFloor(address(nft), TOKEN_ID, FLOOR * 10);
-
-        assertEq(validate(listing(FLOOR * 10)), MAGIC_VALUE);
-        OrderComponents memory otherToken = listing(FLOOR);
-        otherToken.offer[0].identifierOrCriteria = TOKEN_ID + 1;
-        assertEq(validate(otherToken), MAGIC_VALUE);
-
-        expectRevertOn(
-            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR * 10, FLOOR),
-            listing(FLOOR)
-        );
-    }
-
-    /// @dev A per-token floor makes one token listable in an otherwise unlistable collection.
-    function test_perTokenFloorWithoutCollectionFloor() public {
-        setNftPolicy(0, CEILING);
-        vm.prank(owner);
-        vault.setTokenListingFloor(address(nft), TOKEN_ID, FLOOR);
-
-        assertEq(validate(listing(FLOOR)), MAGIC_VALUE);
-
-        OrderComponents memory otherToken = listing(FLOOR);
-        otherToken.offer[0].identifierOrCriteria = TOKEN_ID + 1;
-        expectRevertOn(
-            abi.encodeWithSelector(Seavault.CollectionNotListable.selector, address(nft)),
-            otherToken
-        );
-    }
-
     /// @dev A collection the vault may bid on never sells below the ceiling, or a compromised keeper
     ///      could buy at the ceiling and sell back at the floor on repeat.
     function test_listingMustClearCeilingWhenAboveFloor() public {
@@ -161,19 +130,6 @@ contract SeavaultListingTest is VaultTest {
         expectRevertOn(
             abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR * 2, FLOOR * 2 - 1),
             listing(FLOOR * 2 - 1)
-        );
-        assertEq(validate(listing(FLOOR * 2)), MAGIC_VALUE);
-    }
-
-    /// @dev Per-token floors are raised the same way, so none can undercut the ceiling.
-    function test_ceilingRaisesEveryFloorBelowIt() public {
-        setNftPolicy(FLOOR, FLOOR * 2);
-        vm.prank(owner);
-        vault.setTokenListingFloor(address(nft), TOKEN_ID, FLOOR / 2);
-
-        expectRevertOn(
-            abi.encodeWithSelector(Seavault.PriceBelowFloor.selector, FLOOR * 2, FLOOR),
-            listing(FLOOR)
         );
         assertEq(validate(listing(FLOOR * 2)), MAGIC_VALUE);
     }

@@ -404,7 +404,6 @@ contract VaultInvariantHandler is Test {
         // A ceiling below UNIT must leave every raw floor at least UNIT for the fixed valuation.
         uint256 minimum = ceiling == UNIT ? UNIT / 4 : UNIT;
         uint256 floor = bound(seed >> 8, minimum, 2 * UNIT);
-        uint256 overrideFloor = seed & 32 == 0 ? 0 : floor;
         nftPolicy.floor = floor;
         editionPolicy.floor = floor;
         nftPolicy.ceiling = ceiling;
@@ -414,13 +413,6 @@ contract VaultInvariantHandler is Test {
         vm.startPrank(owners[ownerIndex]);
         vault.setPolicyRoot(previous, next);
         if (previous != next) ++generation;
-        vault.setTokenListingFloor(address(nft), seed % NFT_COUNT, overrideFloor);
-        // Clear old per-token overrides when lowering the ceiling below the valuation.
-        if (ceiling < UNIT) {
-            for (uint256 i; i < NFT_COUNT; ++i) {
-                vault.setTokenListingFloor(address(nft), i, 0);
-            }
-        }
         vault.setMaxFeeBps(bound(seed >> 16, 0, 1000));
         vm.stopPrank();
     }
@@ -530,7 +522,7 @@ contract VaultInvariantHandler is Test {
         } else if (action == 6) {
             data = abi.encodeCall(vault.setPolicyRoot, (vault.policyRoot(), bytes32(0)));
         } else if (action == 7) {
-            data = abi.encodeCall(vault.setTokenListingFloor, (address(nft), seed % NFT_COUNT, 1));
+            data = abi.encodeCall(vault.setMaxFeeBps, (10_000));
         } else if (action == 8) {
             data = abi.encodeCall(vault.setKeeper, (address(taker)));
         } else if (action == 9) {

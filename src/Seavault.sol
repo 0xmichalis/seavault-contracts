@@ -46,8 +46,8 @@ import {SeaportOrderHash} from "./libraries/SeaportOrderHash.sol";
 ///
 ///      Worst case for a compromised keeper key is therefore a sale at the floor, or a bid or a buy
 ///      at the ceiling, not asset theft. A collection never sells below its ceiling in the same
-///      denomination. Floors are loss bounds, not live prices: repricing below a floor needs an
-///      owner transaction.
+///      denomination. Floors are loss bounds, not live prices: repricing below a floor needs a
+///      new owner-approved policy or listing permit.
 ///
 ///      Policy binds whenever Seaport asks, and Seaport stops asking once an order is validated
 ///      on-chain, which anyone can do with its signature, or partially filled. Replacing the collection
@@ -72,14 +72,18 @@ contract Seavault is Ownable2Step, IERC1271 {
     uint256 private constant BPS_DENOMINATOR = 10_000;
     uint256 private constant DEFAULT_MAX_FEE_BPS = 1000;
     uint256 private constant DEFAULT_MAX_ORDER_DURATION = 30 days;
+    uint256 private constant KEEPER_SIGNATURE_LENGTH = 65;
     uint256 private constant MAX_POLICY_DEPTH = 10;
     uint256 private constant MAX_POLICY_COLLECTIONS = 2 ** MAX_POLICY_DEPTH;
 
     bytes32 private constant EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
     );
-    bytes32 private constant LOGIN_DOMAIN_NAME_HASH = keccak256("Seavault");
-    bytes32 private constant LOGIN_DOMAIN_VERSION_HASH = keccak256("1");
+    bytes32 private constant LISTING_PERMIT_TYPEHASH = keccak256(
+        "ListingPermit(address collection,uint256 tokenId,address currency,uint256 floorPerUnit,uint256 deadline,uint256 counter)"
+    );
+    bytes32 private constant DOMAIN_NAME_HASH = keccak256("Seavault");
+    bytes32 private constant DOMAIN_VERSION_HASH = keccak256("1");
     bytes private constant OPENSEA_LOGIN_PREFIX =
         "opensea.io wants you to sign in with your Ethereum account:\n";
 
@@ -111,18 +115,23 @@ contract Seavault is Ownable2Step, IERC1271 {
     ///         and buys.
     bytes32 public policyRoot;
 
-    /// @notice Native-denominated per-token floor override. Zero falls back to the collection floor.
-    mapping(address collection => mapping(uint256 tokenId => uint256 floorPerUnit)) public
-        tokenListingFloor;
-
     /// @notice The collection's minimum proceeds and maximum spend per NFT, the leaf's salt, and
     ///         its inclusion proof against `policyRoot`. Amounts use the order currency's base units.
+    ///         A zero collection floor requires an owner-signed permit for each offered NFT item.
     struct CollectionWitness {
         address collection;
         uint256 floor;
         uint256 ceiling;
         bytes32 salt;
         bytes32[] siblings;
+    }
+
+    /// @notice Proof of the owner's floor for one offered NFT item. The order supplies the
+    ///         collection, token ID, currency and Seaport counter covered by the signature.
+    struct ListingPermit {
+        uint256 floorPerUnit;
+        uint256 deadline;
+        bytes signature;
     }
 
     /// @notice Native ETH buys may still spend. ERC20 buys draw on the conduit allowance, as bids do.
@@ -134,9 +143,6 @@ contract Seavault is Ownable2Step, IERC1271 {
 
     event KeeperUpdated(address keeper);
     event PolicyRootUpdated(bytes32 indexed root);
-    event TokenListingFloorUpdated(
-        address indexed collection, uint256 indexed tokenId, uint256 floorPerUnit
-    );
     event MaxOrderDurationUpdated(uint256 maxOrderDuration);
     event MaxFeeBpsUpdated(uint256 maxFeeBps);
     event NativeBuyAllowanceUpdated(uint256 allowance);
@@ -158,6 +164,7 @@ contract Seavault is Ownable2Step, IERC1271 {
     error UnsupportedConsiderationItem(ItemType itemType);
     error PolicyRootMismatch(bytes32 expectedRoot, bytes32 currentRoot);
     error InvalidCollectionWitness();
+    error InvalidListingPermit();
     error MalformedNativeItem(address token);
     error PaymentTokenNotAllowed(address token);
     error CollectionNotListable(address collection);
@@ -239,7 +246,9 @@ contract Seavault is Ownable2Step, IERC1271 {
     ///        EIP-191 hash of an OpenSea sign-in message.
     /// @param signature `abi.encode(OrderComponents, bytes, CollectionWitness[])`: the order behind
     ///        `digest`, the keeper key's ECDSA signature and the witnesses for its NFT collections in
-    ///        ascending address order. For a cancellation, `abi.encode(orderHash, bytes)`. For
+    ///        ascending address order. For a listing with permits, the second field contains
+    ///        `abi.encode(keeperSignature, ListingPermit[])`, with one permit per zero-floor item in
+    ///        offer order. For a cancellation, `abi.encode(orderHash, bytes)`. For
     ///        a sign-in, `abi.encode(OPENSEA_LOGIN_TAG, messageBody, deadline, ownerSignature)`, where
     ///        `messageBody` is the sign-in message minus its first two lines and their newlines.
     /// @dev Reverts rather than returning a non-magic value, so failures surface with a reason.
@@ -289,9 +298,13 @@ contract Seavault is Ownable2Step, IERC1271 {
         if (SeaportOrderHash.digest(separator, order) != digest) {
             revert DigestMismatch();
         }
+        ListingPermit[] memory permits;
+        if (orderSignature.length != KEEPER_SIGNATURE_LENGTH) {
+            (orderSignature, permits) = abi.decode(orderSignature, (bytes, ListingPermit[]));
+        }
         if (ECDSA.recover(digest, orderSignature) != keeper) revert UnauthorizedSigner();
 
-        _validatePolicy(order, witnesses);
+        _validatePolicy(order, witnesses, permits);
 
         return IERC1271.isValidSignature.selector;
     }
@@ -332,16 +345,6 @@ contract Seavault is Ownable2Step, IERC1271 {
         policyRoot = newRoot;
         seaport.incrementCounter();
         emit PolicyRootUpdated(newRoot);
-    }
-
-    /// @notice Sets a token's own native-denominated listing floor. An override still requires a
-    ///         collection witness so the vault can enforce the ceiling as well as the floor.
-    function setTokenListingFloor(address collection, uint256 tokenId, uint256 floorPerUnit)
-        external
-        onlyOwner
-    {
-        tokenListingFloor[collection][tokenId] = floorPerUnit;
-        emit TokenListingFloorUpdated(collection, tokenId, floorPerUnit);
     }
 
     /// @notice Reports whether the vault supports a currency. Orders also need a matching policy.
@@ -580,11 +583,14 @@ contract Seavault is Ownable2Step, IERC1271 {
                            POLICY ENFORCEMENT
     //////////////////////////////////////////////////////////////*/
 
-    function _validatePolicy(OrderComponents memory order, CollectionWitness[] memory witnesses)
-        private
-        view
-    {
-        if (order.offerer != address(this)) revert InvalidOfferer();
+    function _validatePolicy(
+        OrderComponents memory order,
+        CollectionWitness[] memory witnesses,
+        ListingPermit[] memory permits
+    ) private view {
+        if (order.offerer != address(this)) {
+            revert InvalidOfferer();
+        }
         if (order.endTime <= order.startTime) revert InvalidTimeRange();
 
         uint256 duration = order.endTime - order.startTime;
@@ -607,8 +613,9 @@ contract Seavault is Ownable2Step, IERC1271 {
             bool paysUsdc =
                 order.consideration.length != 0 && _usesUsdc(order.consideration[0].token);
             _verifyCollectionWitnesses(witnesses, paysUsdc);
-            _validateSale(order, witnesses, paysUsdc);
+            _validateSale(order, witnesses, permits, paysUsdc);
         } else if (offered == ItemType.ERC20) {
+            if (permits.length != 0) revert InvalidListingPermit();
             _checkWitnessCount(witnesses.length, order.consideration.length);
             bool paysUsdc = _usesUsdc(order.offer[0].token);
             _verifyCollectionWitnesses(witnesses, paysUsdc);
@@ -624,9 +631,16 @@ contract Seavault is Ownable2Step, IERC1271 {
     function _validateSale(
         OrderComponents memory order,
         CollectionWitness[] memory witnesses,
+        ListingPermit[] memory permits,
         bool paysUsdc
     ) private view {
+        if (
+            permits.length > order.offer.length
+                || (permits.length != 0 && order.counter != seaport.getCounter(address(this)))
+        ) revert InvalidListingPermit();
+
         uint256 requiredProceeds;
+        uint256 nextPermit;
         for (uint256 i; i < order.offer.length; ++i) {
             OfferItem memory item = order.offer[i];
             if (item.itemType != ItemType.ERC721 && item.itemType != ItemType.ERC1155) {
@@ -634,22 +648,51 @@ contract Seavault is Ownable2Step, IERC1271 {
             }
 
             CollectionWitness memory policy = _collectionPolicy(witnesses, item.token);
-            uint256 floorPerUnit =
-                paysUsdc ? 0 : tokenListingFloor[item.token][item.identifierOrCriteria];
-            if (floorPerUnit == 0) floorPerUnit = policy.floor;
-            if (floorPerUnit == 0) revert CollectionNotListable(item.token);
+            uint256 floorPerUnit = policy.floor;
+            if (floorPerUnit == 0) {
+                if (nextPermit == permits.length) revert CollectionNotListable(item.token);
+                floorPerUnit = _listingPermitFloor(order, item, permits[nextPermit++], paysUsdc);
+            }
 
             // Selling below the ceiling would let the keeper buy and sell back at a loss repeatedly.
             floorPerUnit = Math.max(floorPerUnit, policy.ceiling);
             // Partial fills settle pro rata, so the floor binds per unit offered.
             requiredProceeds += floorPerUnit * Math.max(item.startAmount, item.endAmount);
         }
+        if (nextPermit != permits.length) revert InvalidListingPermit();
 
         (uint256 proceeds, uint256 fees) = _tallyPayments(order.consideration, paysUsdc);
         if (proceeds < requiredProceeds) revert PriceBelowFloor(requiredProceeds, proceeds);
 
         uint256 total = proceeds + fees;
         if (fees * BPS_DENOMINATOR > total * maxFeeBps) revert FeeShareTooHigh(fees, total);
+    }
+
+    function _listingPermitFloor(
+        OrderComponents memory order,
+        OfferItem memory item,
+        ListingPermit memory permit,
+        bool paysUsdc
+    ) private view returns (uint256) {
+        // Seaport can cache order validation, so settlement must expire with the permit.
+        if (
+            permit.floorPerUnit == 0 || permit.deadline <= block.timestamp
+                || order.endTime > permit.deadline
+        ) revert InvalidListingPermit();
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                LISTING_PERMIT_TYPEHASH,
+                item.token,
+                item.identifierOrCriteria,
+                paysUsdc ? usdc : NATIVE_TOKEN,
+                permit.floorPerUnit,
+                permit.deadline,
+                order.counter
+            )
+        );
+        _checkOwnerApproval(structHash, permit.signature);
+        return permit.floorPerUnit;
     }
 
     /// @dev Bidding: everything the vault offers is spend, and it is bounded by the ceilings of the
@@ -795,20 +838,24 @@ contract Seavault is Ownable2Step, IERC1271 {
         if (MessageHashUtils.toEthSignedMessageHash(message) != digest) revert DigestMismatch();
         if (block.timestamp > deadline) revert OpenSeaLoginExpired(deadline);
 
+        _checkOwnerApproval(
+            keccak256(abi.encode(OPENSEA_LOGIN_TYPEHASH, keccak256(message), deadline)),
+            ownerSignature
+        );
+    }
+
+    function _checkOwnerApproval(bytes32 structHash, bytes memory signature) private view {
         bytes32 domainSeparator = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,
-                LOGIN_DOMAIN_NAME_HASH,
-                LOGIN_DOMAIN_VERSION_HASH,
+                DOMAIN_NAME_HASH,
+                DOMAIN_VERSION_HASH,
                 block.chainid,
                 address(this)
             )
         );
-        bytes32 approval = MessageHashUtils.toTypedDataHash(
-            domainSeparator,
-            keccak256(abi.encode(OPENSEA_LOGIN_TYPEHASH, keccak256(message), deadline))
-        );
-        if (!SignatureChecker.isValidSignatureNow(owner(), approval, ownerSignature)) {
+        bytes32 approval = MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
+        if (!SignatureChecker.isValidSignatureNow(owner(), approval, signature)) {
             revert UnauthorizedSigner();
         }
     }

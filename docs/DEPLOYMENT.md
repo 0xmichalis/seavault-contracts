@@ -114,9 +114,9 @@ The vault owner sets the parameters below.
 1. Build and save the [collection policy snapshot](ARCHITECTURE.md#collection-policy-snapshots)
    with the listing floors and bid or buy ceilings. Activate its root with
    `setPolicyRoot(expectedRoot, newRoot)`. Use the root of zero as `expectedRoot` for a new vault.
-2. Call `setTokenListingFloor` where a token needs its own native-denominated bound. Include a native
-   row for the collection even if it has a zero default floor and ceiling. A positive floor,
-   including an override, is raised to at least the ceiling when the vault validates listings.
+2. For token-specific floors, include a row with a zero floor in the desired denomination and
+   [sign and share listing permits](ARCHITECTURE.md#listing-permits) with the keeper for the
+   individual tokens it can list.
 3. Call `setConduitApprovalForAll(collection, true)` for every collection the vault sells from.
 4. Call `setConduitAllowance` with a finite amount for each of wrapped native and USDC the vault
    will bid or buy in. The allowance caps spending in the approved token. The keeper can wrap
@@ -145,4 +145,6 @@ The vault owner sets the parameters below.
 The factory and vault code are immutable. Changes to the contract logic or a factory's
 constructor addresses require a new deployment with a fresh `FACTORY_SALT_SEED`, used
 consistently across chains. Use each vault's `factory()` address to verify its membership.
+Clients that use the token-floor getter and setter on earlier vaults need version-specific
+handling and listing permit support before adding a permit-enabled factory.
 
