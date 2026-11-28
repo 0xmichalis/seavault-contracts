@@ -33,7 +33,7 @@ contract DeploySeavaultFactory is Script {
     ICreateX public constant CREATE_X = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
     address public constant SEAPORT_V1_6 = 0x0000000000000068F116a894984e2DB1123eB395;
     address public constant OPENSEA_CONDUIT = 0x1E0049783F008A0085193E00003D00cd54003c71;
-    string public constant DEFAULT_SALT_SEED = "seavault-factory-v1";
+    bytes32 private constant LEGACY_FACTORY_SALT_SEED_HASH = keccak256("seavault-factory-v1");
     uint256 private constant CONSTRUCTOR_ARGS_LENGTH = 5 * 32;
 
     struct DeploymentRecord {
@@ -51,13 +51,19 @@ contract DeploySeavaultFactory is Script {
         string saltSeed;
     }
 
+    error MissingFactorySaltSeed();
+    error LegacyFactorySaltSeed();
+
     function run() external returns (SeavaultFactory factory) {
+        string memory saltSeed = _requiredSaltSeed();
+        if (keccak256(bytes(saltSeed)) == LEGACY_FACTORY_SALT_SEED_HASH) {
+            revert LegacyFactorySaltSeed();
+        }
         address seaport = vm.envOr("SEAPORT", SEAPORT_V1_6);
         address conduit = vm.envOr("CONDUIT", OPENSEA_CONDUIT);
         address owner = vm.envOr("FACTORY_OWNER", msg.sender);
         address wNative = vm.envAddress("W_NATIVE");
         address usdc = vm.envOr("USDC", address(0));
-        string memory saltSeed = vm.envOr("FACTORY_SALT_SEED", string(DEFAULT_SALT_SEED));
         address deployer = msg.sender;
         address predicted = predict(deployer, saltSeed);
 
@@ -98,9 +104,13 @@ contract DeploySeavaultFactory is Script {
 
     /// @notice Records an earlier deployment from a saved broadcast file.
     function record(string memory broadcastPath) public returns (string memory) {
-        return _record(
-            vm.readFile(broadcastPath), vm.envOr("FACTORY_SALT_SEED", string(DEFAULT_SALT_SEED))
-        );
+        string memory saltSeed = _requiredSaltSeed();
+        return _record(vm.readFile(broadcastPath), saltSeed);
+    }
+
+    function _requiredSaltSeed() internal view returns (string memory seed) {
+        seed = vm.envOr("FACTORY_SALT_SEED", string(""));
+        if (bytes(seed).length == 0) revert MissingFactorySaltSeed();
     }
 
     function _record(string memory broadcastJson, string memory saltSeed)

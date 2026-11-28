@@ -45,8 +45,10 @@ the chain's canonical wrapped native token. Set `USDC` to the chain's
 where one exists. On a chain without Circle-issued USDC, leave `USDC` unset so it defaults to
 zero.
 
-A new factory salt seed yields a fresh factory and a fresh set of vault addresses, which is how
-you roll out a new vault version. A new vault salt can create a replacement after the owner
+Set `FACTORY_SALT_SEED` explicitly for deployment. Use `seavault-factory-v2` for the current
+production build: the script has no default and rejects the reserved `seavault-factory-v1` seed.
+A new factory seed yields a fresh factory and a fresh set of vault addresses, which is how you
+roll out a new vault version. A new vault salt can create a replacement after the owner
 transfers their current vault away.
 A wallet can own only one vault per factory per chain, including vaults received through ownership transfers.
 
@@ -62,8 +64,8 @@ target chain before pressing "Confirm Connection", because forge records the cha
 and refuses to send if it differs from the `--rpc-url` chain.
 
 For a throwaway deployment, such as an end-to-end keeper test, give the factory a salt seed of its
-own. Under the default seed, a test factory from the production deployer takes the production
-address on that chain for good.
+own. Reusing the production seed with the production deployer would occupy the production address
+on that chain for good.
 
 ```sh
 FACTORY_SALT_SEED=seavault-factory-e2e-1 \
@@ -96,7 +98,8 @@ including the initial owner.
 The ignored broadcast and cache directories remain local.
 
 For an earlier saved broadcast, use the `record(string)` entry point with its file path instead of
-`record()`. Keep that broadcast file's original contracts revision when recording.
+`record()`. Keep that broadcast file's original contracts revision and specify its original salt
+seed when recording. Address prediction still accepts any seed, including the historical one.
 
 ## Post-deploy checklist, per chain
 
