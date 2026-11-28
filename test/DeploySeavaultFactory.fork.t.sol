@@ -19,7 +19,7 @@ contract DeploySeavaultFactoryForkTest is BaseFork {
         forkBase();
         deployScript = new DeploySeavaultFactory();
         createX = deployScript.CREATE_X();
-        seed = deployScript.DEFAULT_SALT_SEED();
+        seed = "seavault-factory-v2";
     }
 
     function test_deploysAtPredictedAddress() public {

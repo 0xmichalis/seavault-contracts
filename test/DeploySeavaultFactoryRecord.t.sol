@@ -42,7 +42,7 @@ contract DeploySeavaultFactoryRecordTest is Test {
         vm.chainId(31_337);
         vm.roll(100);
         recorder = new DeploymentRecorder();
-        seed = recorder.DEFAULT_SALT_SEED();
+        seed = "seavault-factory-v2";
         factory = new SeavaultFactory(
             recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner, wNative, usdc
         );
@@ -102,6 +102,24 @@ contract DeploySeavaultFactoryRecordTest is Test {
             vm.toString(deploymentBlockHash),
             '"}'
         );
+    }
+
+    function test_runRejectsEmptySaltSeed() public {
+        vm.setEnv("FACTORY_SALT_SEED", "");
+        vm.expectRevert(DeploySeavaultFactory.MissingFactorySaltSeed.selector);
+        recorder.run();
+    }
+
+    function test_runRejectsLegacySaltSeed() public {
+        vm.setEnv("FACTORY_SALT_SEED", "seavault-factory-v1");
+        vm.expectRevert(DeploySeavaultFactory.LegacyFactorySaltSeed.selector);
+        recorder.run();
+    }
+
+    function test_recordRejectsEmptySaltSeedBeforeReadingBroadcast() public {
+        vm.setEnv("FACTORY_SALT_SEED", "");
+        vm.expectRevert(DeploySeavaultFactory.MissingFactorySaltSeed.selector);
+        recorder.record("no-broadcast.json");
     }
 
     function test_recordsConfirmedDeploymentAndCodeHashes() public {
