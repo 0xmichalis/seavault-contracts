@@ -4,8 +4,10 @@ Both the factory and the vaults it creates go through [CreateX](https://github.c
 at `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed`, which is deployed on every chain these contracts
 target (ethereum, base, arbitrum, optimism, matic, zora, shape). With CREATE3 the address depends on the salt
 alone, never on the init code, so **the same address is used on every chain even though constructor
-arguments differ**. The factory fixes each chain's Seaport, conduit, wrapped native token and
-USDC address. Each vault receives those settings along with its owner and keeper.
+arguments differ**. The factory deploys one implementation with each chain's Seaport, conduit,
+wrapped native token and USDC address fixed in its code. It creates fixed-target clones and sets
+each vault's owner and keeper in the creation transaction. Each clone holds its own assets and
+policy and accepts ETH with empty calldata, including stipend-limited transfers.
 
 Both salts are `bytes20(sender) ++ 0x00 ++ bytes11(digest)`, which asks CreateX for a permissioned,
 chain-independent deploy: only that sender can use the salt (nobody can squat an address on a chain
@@ -19,11 +21,11 @@ salt seed on every chain** — the script aborts if the broadcaster does not mat
 ```sh
 # 1. Predict the factory address; no key needed, and any chain gives the same answer
 forge script script/DeploySeavaultFactory.s.sol --sig "predict(address,string)" \
-  0xDEPLOYER seavault-factory-v2 --rpc-url base
+  0xDEPLOYER seavault-factory-v3 --rpc-url base
 
 # 2. Deploy the factory, per chain. FACTORY_OWNER (default: the deployer) becomes the fee
 #    admin and initial fee recipient
-FACTORY_SALT_SEED=seavault-factory-v2 \
+FACTORY_SALT_SEED=seavault-factory-v3 \
   W_NATIVE=0x4200000000000000000000000000000000000006 \
   USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
   forge script script/DeploySeavaultFactory.s.sol --rpc-url base --account deployer \
@@ -45,8 +47,8 @@ the chain's canonical wrapped native token. Set `USDC` to the chain's
 where one exists. On a chain without Circle-issued USDC, leave `USDC` unset so it defaults to
 zero.
 
-Set `FACTORY_SALT_SEED` explicitly for deployment. Use `seavault-factory-v2` for the current
-production build: the script has no default and rejects the reserved `seavault-factory-v1` seed.
+Set `FACTORY_SALT_SEED` explicitly for deployment. Use `seavault-factory-v3` for the clone factory.
+The script rejects the reserved `seavault-factory-v1` seed.
 A new factory seed yields a fresh factory and a fresh set of vault addresses, which is how you
 roll out a new vault version. A new vault salt can create a replacement after the owner
 transfers their current vault away.
@@ -80,21 +82,21 @@ After the deployment confirms, generate its public record with the same contract
 `FACTORY_SALT_SEED` used to deploy:
 
 ```sh
-FACTORY_SALT_SEED=seavault-factory-v2 \
+FACTORY_SALT_SEED=seavault-factory-v3 \
   forge script --root . script/DeploySeavaultFactory.s.sol --sig "record()" --rpc-url base
 ```
 
 This read-only RPC step needs no wallet. It reads the latest broadcast file, requires a successful
 receipt, compares its transaction input with this build, and checks the deployed factory's wiring and
-vault code store. Recent deployment block hashes are also checked against the chain. Recording runs
-separately because the deployment script executes before transactions
-are mined. Pending or failed transactions produce no record.
+vault implementation runtime. Recent deployment block hashes are also checked against the chain.
+Recording runs separately because the deployment script executes before transactions are mined.
+Pending or failed transactions produce no record.
 
 Commit the resulting `deployments/<chain-id>/<factory-address>.json`. It includes the transaction,
 block, source commit, constructor addresses (including `wNative` and `usdc`), salt seed and both
-code hashes. Runtime code hashes can be used for Listoor's `VAULT_FACTORY_CODEHASHES`. The vault
-code-store hash identifies the supported vault version. Records describe deployment-time values,
-including the initial owner.
+runtime code hashes. The factory runtime hash can be used for Listoor's `VAULT_FACTORY_CODEHASHES`.
+Clone factories require Listoor to verify `vaultImplementation` and its runtime hash. Records
+describe deployment-time values, including the initial owner.
 The ignored broadcast and cache directories remain local.
 
 For an earlier saved broadcast, use the `record(string)` entry point with its file path instead of

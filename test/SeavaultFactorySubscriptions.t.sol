@@ -5,6 +5,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {StdStorage, Test, stdStorage} from "forge-std/Test.sol";
 
 import {SeavaultFactory} from "../src/SeavaultFactory.sol";
+import {MockSeaport} from "./mocks/MockSeaport.sol";
 
 /// @notice The factory's subscription registry: pricing, overrides, extension arithmetic, and the
 ///         promise that paid time can only grow. Needs no fork — nothing here deploys a vault.
@@ -22,7 +23,11 @@ contract SeavaultFactorySubscriptionsTest is Test {
 
     function setUp() public {
         factory = new SeavaultFactory(
-            makeAddr("seaport"), makeAddr("conduit"), factoryOwner, makeAddr("wNative"), address(0)
+            address(new MockSeaport()),
+            makeAddr("conduit"),
+            factoryOwner,
+            makeAddr("wNative"),
+            address(0)
         );
         period = factory.SUBSCRIPTION_PERIOD();
         // `createVault` needs CreateX, which only exists on a fork, so registration is written

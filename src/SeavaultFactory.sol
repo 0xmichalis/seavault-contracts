@@ -11,21 +11,16 @@ import {Seavault} from "./Seavault.sol";
 import {ICreateX} from "./interfaces/ICreateX.sol";
 import {ISubscriptionRegistry} from "./interfaces/ISubscriptionRegistry.sol";
 import {IVaultOwnershipRegistry} from "./interfaces/IVaultOwnershipRegistry.sol";
-import {CodeStore} from "./libraries/CodeStore.sol";
+import {SeavaultClone} from "./libraries/SeavaultClone.sol";
 
 /// @title SeavaultFactory
 /// @custom:security-contact security@kazani.ch
 /// @notice Deploys `Seavault` instances and keeps a registry of them, so an owner can get a vault
 ///         in one transaction and the keeper can look the vault up on-chain instead of being configured
 ///         with an address per chain.
-/// @dev Vaults are real deployments, not proxies: the vault keeps its immutable Seaport wiring and
-///      its constructor-time domain-separator check. Deployment goes through CreateX's CREATE3, so a
-///      vault's address depends only on its owner and salt — identical on every chain even though
-///      the factory feeds each chain's Seaport, conduit and payment tokens into the constructor.
-///
-///      The vault's creation code lives in a store contract the constructor writes, not in the
-///      factory's own bytecode, so the vault can grow without pushing the factory past the
-///      contract size limit.
+/// @dev Each vault points to this factory's immutable implementation, which validates and fixes
+///      the chain's Seaport wiring at construction. CreateX's CREATE3 makes the address depend on
+///      the factory, vault owner and salt, so chain-specific wiring does not affect the address.
 ///
 ///      The CreateX salt embeds this factory's address with redeploy protection off, which asks
 ///      CreateX for a permissioned, chain-independent deploy: no other caller can occupy a vault
@@ -58,7 +53,7 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
     /// @notice Wrapped native token enabled at creation for every vault from this factory.
     address public immutable wNative;
 
-    /// @notice USDC address passed to every vault, or zero when the chain has no configured USDC.
+    /// @notice USDC address enabled for every vault, or zero when the chain has no configured USDC.
     address public immutable usdc;
 
     /// @notice Vault deployed for an owner under a given salt, zero if not created yet. Keyed by the
@@ -91,8 +86,8 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
     /// @inheritdoc ISubscriptionRegistry
     mapping(address vault => bool blocked) public override isBlocked;
 
-    /// @notice Where the vault's creation code is kept; `CodeStore.read` returns it verbatim.
-    address public immutable vaultCodeStore;
+    /// @notice Fixed implementation of every vault created by this factory.
+    Seavault public immutable vaultImplementation;
 
     struct PriceOverride {
         bool enabled;
@@ -133,7 +128,7 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
         conduit = conduit_;
         wNative = wNative_;
         usdc = usdc_;
-        vaultCodeStore = CodeStore.write(type(Seavault).creationCode);
+        vaultImplementation = new Seavault(seaport_, conduit_, address(this), wNative_, usdc_);
         subscriptionRecipient = owner_;
         trialPeriod = DEFAULT_TRIAL_PERIOD;
         emit SubscriptionUpdated(owner_, 0);
@@ -145,8 +140,6 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
     ///        the vault's address across chains.
     /// @param keeper Hot key authorized to sign orders for the vault.
     /// @dev Any native value is deposited into the new vault in this same transaction.
-    /// @dev Inputs are checked here rather than left to the vault's constructor, because CreateX
-    ///      replaces a failed construction with its own opaque `FailedContractCreation`.
     function createVault(bytes32 salt, address keeper) external payable returns (Seavault vault) {
         if (keeper == address(0)) revert ZeroAddress();
         if (vaultOf[msg.sender][salt] != address(0)) revert VaultAlreadyExists(salt);
@@ -155,14 +148,10 @@ contract SeavaultFactory is Ownable2Step, ISubscriptionRegistry, IVaultOwnership
         vault = Seavault(
             payable(CREATE_X.deployCreate3(
                     _createXSalt(msg.sender, salt),
-                    abi.encodePacked(
-                        CodeStore.read(vaultCodeStore),
-                        abi.encode(
-                            seaport, conduit, msg.sender, keeper, address(this), wNative, usdc
-                        )
-                    )
+                    SeavaultClone.initCode(address(vaultImplementation))
                 ))
         );
+        vault.initialize(msg.sender, keeper);
 
         vaultOf[msg.sender][salt] = address(vault);
         isVault[address(vault)] = true;

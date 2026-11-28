@@ -215,9 +215,7 @@ contract SeavaultOpenSeaLoginTest is VaultTest {
     }
 
     function test_rejectsAnApprovalForAnotherVault() public {
-        Seavault other = new Seavault(
-            address(seaport), conduit, owner, keeper, address(subscriptions), address(weth), usdc
-        );
+        Seavault other = newVault(owner, keeper, keccak256("other vault"));
         bytes memory body = bytes(websiteBody());
         bytes memory signature = abi.encode(
             vault.OPENSEA_LOGIN_TAG(),
@@ -273,9 +271,7 @@ contract SeavaultOpenSeaLoginTest is VaultTest {
     /// @dev With one key as owner and keeper, a sign-in approval still cannot pass as an order, nor
     ///      an order signature as a sign-in approval.
     function test_signInsAndOrdersStaySeparateUnderOneKey() public {
-        Seavault shared = new Seavault(
-            address(seaport), conduit, owner, owner, address(subscriptions), address(weth), usdc
-        );
+        Seavault shared = newVault(owner, owner, keccak256("shared signer"));
         vm.prank(owner);
         shared.setPolicyRoot(bytes32(0), collectionPolicyRoot());
         Seavault original = vault;

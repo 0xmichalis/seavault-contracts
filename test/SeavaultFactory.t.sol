@@ -5,28 +5,27 @@ import {Test} from "forge-std/Test.sol";
 
 import {Seavault} from "../src/Seavault.sol";
 import {SeavaultFactory} from "../src/SeavaultFactory.sol";
-import {CodeStore} from "../src/libraries/CodeStore.sol";
+import {MockSeaport} from "./mocks/MockSeaport.sol";
 
 /// @notice What the factory carries besides its registry. Creating a vault needs CreateX, so that
 ///         is covered on a fork.
 contract SeavaultFactoryTest is Test {
-    function test_keepsTheVaultCreationCodeOutsideItsOwnBytecode() public {
-        SeavaultFactory factory = new SeavaultFactory(
-            makeAddr("seaport"),
-            makeAddr("conduit"),
-            makeAddr("owner"),
-            makeAddr("wNative"),
-            address(0)
-        );
+    function test_deploysSharedImplementationWithFactoryWiring() public {
+        address seaport = address(new MockSeaport());
+        address conduit = makeAddr("conduit");
+        address wNative = makeAddr("wNative");
+        address usdc = makeAddr("usdc");
+        SeavaultFactory factory =
+            new SeavaultFactory(seaport, conduit, makeAddr("owner"), wNative, usdc);
 
-        assertEq(CodeStore.read(factory.vaultCodeStore()), type(Seavault).creationCode);
-        assertLt(address(factory).code.length, type(Seavault).creationCode.length);
-    }
-
-    /// @dev The store is a contract like any other: EIP-170 caps it at 24,576 bytes of runtime code,
-    ///      one of which is its leading STOP byte.
-    function test_vaultCreationCodeFitsTheCodeStore() public pure {
-        assertLe(type(Seavault).creationCode.length, 24_575);
+        Seavault implementation = factory.vaultImplementation();
+        assertEq(address(implementation.seaport()), seaport);
+        assertEq(implementation.conduit(), conduit);
+        assertEq(address(implementation.factory()), address(factory));
+        assertEq(implementation.owner(), address(implementation));
+        assertTrue(implementation.paymentTokenAllowed(wNative));
+        assertTrue(implementation.paymentTokenAllowed(usdc));
+        assertLe(address(implementation).code.length, 24_576);
     }
 
     function test_rejectsInvalidPaymentTokens() public {

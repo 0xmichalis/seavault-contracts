@@ -5,6 +5,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {StdStorage, Test, stdStorage} from "forge-std/Test.sol";
 
 import {SeavaultFactory} from "../src/SeavaultFactory.sol";
+import {MockSeaport} from "./mocks/MockSeaport.sol";
 
 contract SeavaultFactoryBlocklistTest is Test {
     using stdStorage for StdStorage;
@@ -16,7 +17,11 @@ contract SeavaultFactoryBlocklistTest is Test {
 
     function setUp() public {
         factory = new SeavaultFactory(
-            makeAddr("seaport"), makeAddr("conduit"), factoryOwner, makeAddr("wNative"), address(0)
+            address(new MockSeaport()),
+            makeAddr("conduit"),
+            factoryOwner,
+            makeAddr("wNative"),
+            address(0)
         );
         stdstore.target(address(factory))
             .sig(factory.isVault.selector)

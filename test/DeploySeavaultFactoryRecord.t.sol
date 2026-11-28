@@ -6,6 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {DeploySeavaultFactory} from "../script/DeploySeavaultFactory.s.sol";
 import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {ICreateX} from "../src/interfaces/ICreateX.sol";
+import {MockSeaport} from "./mocks/MockSeaport.sol";
 
 contract DeploymentRecorder is DeploySeavaultFactory {
     string public recordedJson;
@@ -42,10 +43,10 @@ contract DeploySeavaultFactoryRecordTest is Test {
         vm.chainId(31_337);
         vm.roll(100);
         recorder = new DeploymentRecorder();
-        seed = "seavault-factory-v2";
-        factory = new SeavaultFactory(
-            recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner, wNative, usdc
-        );
+        seed = "seavault-factory-v3";
+        address seaport = address(new MockSeaport());
+        factory =
+            new SeavaultFactory(seaport, recorder.OPENSEA_CONDUIT(), initialOwner, wNative, usdc);
         vm.etch(address(recorder.CREATE_X()), hex"00");
         vm.mockCall(
             address(recorder.CREATE_X()),
@@ -56,9 +57,8 @@ contract DeploySeavaultFactoryRecordTest is Test {
             abi.encode(address(factory))
         );
         salt = recorder.saltFor(deployer, seed);
-        creationCode = recorder.initCode(
-            recorder.SEAPORT_V1_6(), recorder.OPENSEA_CONDUIT(), initialOwner, wNative, usdc
-        );
+        creationCode =
+            recorder.initCode(seaport, recorder.OPENSEA_CONDUIT(), initialOwner, wNative, usdc);
         transactionJson = string.concat(
             '{"from":"',
             vm.toString(deployer),
@@ -137,9 +137,9 @@ contract DeploySeavaultFactoryRecordTest is Test {
         assertEq(vm.parseJsonString(json, ".sourceCommit"), "75a93d1");
         assertEq(vm.parseJsonString(json, ".saltSeed"), seed);
         assertEq(vm.parseJsonBytes32(json, ".factoryRuntimeCodeHash"), address(factory).codehash);
-        assertEq(
-            vm.parseJsonBytes32(json, ".vaultCodeStoreHash"), factory.vaultCodeStore().codehash
-        );
+        address implementation = address(factory.vaultImplementation());
+        assertEq(vm.parseJsonAddress(json, ".vaultImplementation"), implementation);
+        assertEq(vm.parseJsonBytes32(json, ".vaultImplementationCodeHash"), implementation.codehash);
     }
 
     function test_recordsConstructorOwnerAfterOwnershipChanges() public {
@@ -232,9 +232,9 @@ contract DeploySeavaultFactoryRecordTest is Test {
         assertEq(recorder.recordedJson(), "");
     }
 
-    function test_rejectsDifferentVaultCodeStore() public {
-        vm.etch(factory.vaultCodeStore(), hex"00fe");
-        vm.expectRevert("vault code store does not match current build");
+    function test_rejectsDifferentVaultImplementation() public {
+        vm.etch(address(factory.vaultImplementation()), hex"00fe");
+        vm.expectRevert("vault implementation does not match current build");
         recorder.recordJson(broadcastJson, seed);
         assertEq(recorder.recordedJson(), "");
     }

@@ -40,64 +40,74 @@ contract SeavaultAdminTest is VaultTest {
                 keccak256("not seaport")
             )
         );
-        new Seavault(
-            address(impostor), conduit, owner, keeper, address(subscriptions), address(weth), usdc
-        );
+        new Seavault(address(impostor), conduit, address(subscriptions), address(weth), usdc);
     }
 
     function test_rejectsZeroAddressesAtDeployment() public {
         vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(
-            address(0), conduit, owner, keeper, address(subscriptions), address(weth), usdc
-        );
+        new Seavault(address(0), conduit, address(subscriptions), address(weth), usdc);
 
         vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(
-            address(seaport), address(0), owner, keeper, address(subscriptions), address(weth), usdc
-        );
+        new Seavault(address(seaport), address(0), address(subscriptions), address(weth), usdc);
 
         vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(
-            address(seaport),
-            conduit,
-            owner,
-            address(0),
-            address(subscriptions),
-            address(weth),
-            usdc
-        );
+        new Seavault(address(seaport), conduit, address(0), address(weth), usdc);
 
         vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(address(seaport), conduit, owner, keeper, address(0), address(weth), usdc);
+        new Seavault(address(seaport), conduit, address(subscriptions), address(0), usdc);
+    }
 
-        vm.expectRevert(Seavault.ZeroAddress.selector);
-        new Seavault(
-            address(seaport), conduit, owner, keeper, address(subscriptions), address(0), usdc
-        );
+    function test_rejectsZeroOwnerOrKeeperAtInitialization() public {
+        Seavault fresh = newClone(implementation, keccak256("uninitialized"));
 
+        vm.startPrank(address(subscriptions));
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-        new Seavault(
-            address(seaport),
-            conduit,
-            address(0),
-            keeper,
-            address(subscriptions),
-            address(weth),
-            usdc
-        );
+        fresh.initialize(address(0), keeper);
+        vm.expectRevert(Seavault.ZeroAddress.selector);
+        fresh.initialize(owner, address(0));
+        vm.stopPrank();
+        assertEq(fresh.owner(), address(0));
+    }
+
+    function test_onlyFactoryCanInitializeFreshClone() public {
+        Seavault fresh = newClone(implementation, keccak256("uninitialized"));
+
+        vm.prank(stranger);
+        vm.expectRevert(Seavault.NotFactory.selector);
+        fresh.initialize(stranger, stranger);
+
+        vm.prank(address(subscriptions));
+        fresh.initialize(owner, keeper);
+        assertEq(fresh.owner(), owner);
+        assertEq(fresh.keeper(), keeper);
+    }
+
+    function test_factoryCannotInitializeImplementationOrResetVault() public {
+        vm.startPrank(address(subscriptions));
+        vm.expectRevert(Seavault.AlreadyInitialized.selector);
+        implementation.initialize(stranger, stranger);
+        vm.expectRevert(Seavault.AlreadyInitialized.selector);
+        vault.initialize(stranger, stranger);
+        vm.stopPrank();
+
+        assertEq(implementation.owner(), address(implementation));
+        assertEq(vault.owner(), owner);
+        assertEq(vault.keeper(), keeper);
+    }
+
+    function test_receivesEthFromStipendWithColdImplementation() public {
+        vm.deal(address(this), 1 ether);
+        assertTrue(payable(address(vault)).send(1 ether));
+        assertEq(address(vault).balance, 1 ether);
+        assertEq(address(implementation).balance, 0);
     }
 
     function test_canDeployWithoutUsdc() public {
         vm.chainId(1);
-        Seavault freshVault = new Seavault(
-            address(seaport),
-            conduit,
-            owner,
-            keeper,
-            address(subscriptions),
-            address(weth),
-            address(0)
+        Seavault withoutUsdc = new Seavault(
+            address(seaport), conduit, address(subscriptions), address(weth), address(0)
         );
+        Seavault freshVault = newClone(withoutUsdc, keccak256("without USDC"));
         assertTrue(freshVault.paymentTokenAllowed(address(weth)));
         assertFalse(freshVault.paymentTokenAllowed(usdc));
     }

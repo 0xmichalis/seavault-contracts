@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 import {Test} from "forge-std/Test.sol";
 import {ItemType, OrderType} from "seaport-types/src/lib/ConsiderationEnums.sol";
 import {
@@ -11,6 +12,7 @@ import {
 
 import {Seavault} from "../../src/Seavault.sol";
 import {SeaportOrderHash} from "../../src/libraries/SeaportOrderHash.sol";
+import {SeavaultClone} from "../../src/libraries/SeavaultClone.sol";
 import {MockSeaport} from "../mocks/MockSeaport.sol";
 import {MockSubscriptionRegistry} from "../mocks/MockSubscriptionRegistry.sol";
 import {MockERC1155, MockERC721, MockWETH} from "../mocks/TokenMocks.sol";
@@ -27,6 +29,7 @@ abstract contract VaultTest is Test {
     uint256 internal constant EDITION_ID = 7;
 
     Seavault internal vault;
+    Seavault internal implementation;
     MockSeaport internal seaport;
     MockSubscriptionRegistry internal subscriptions;
     MockERC721 internal nft;
@@ -51,15 +54,28 @@ abstract contract VaultTest is Test {
         nft = new MockERC721();
         edition = new MockERC1155();
         weth = new MockWETH();
-        vault = new Seavault(
-            address(seaport), conduit, owner, keeper, address(subscriptions), address(weth), usdc
-        );
+        implementation =
+            new Seavault(address(seaport), conduit, address(subscriptions), address(weth), usdc);
+        vault = newVault(owner, keeper, keccak256("primary"));
         nftPolicy = PolicyFixture.Rule(address(nft), FLOOR, CEILING);
         editionPolicy = PolicyFixture.Rule(address(edition), FLOOR, CEILING);
 
         vm.startPrank(owner);
         vault.setPolicyRoot(bytes32(0), collectionPolicyRoot());
         vm.stopPrank();
+    }
+
+    function newClone(Seavault target, bytes32 salt) internal returns (Seavault) {
+        return Seavault(payable(Create2.deploy(0, salt, SeavaultClone.initCode(address(target)))));
+    }
+
+    function newVault(address vaultOwner, address vaultKeeper, bytes32 salt)
+        internal
+        returns (Seavault instance)
+    {
+        instance = newClone(implementation, salt);
+        vm.prank(address(subscriptions));
+        instance.initialize(vaultOwner, vaultKeeper);
     }
 
     function collectionPolicyRoot() internal view returns (bytes32) {
