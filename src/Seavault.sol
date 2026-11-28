@@ -145,6 +145,8 @@ contract Seavault is Ownable2Step, IERC1271 {
 
     error ZeroAddress();
     error SeaportDomainMismatch(bytes32 derived, bytes32 reported);
+    error NotFactory();
+    error AlreadyInitialized();
     error DigestMismatch();
     error UnauthorizedSigner();
     error InvalidOfferer();
@@ -180,15 +182,13 @@ contract Seavault is Ownable2Step, IERC1271 {
     constructor(
         address seaport_,
         address conduit_,
-        address owner_,
-        address keeper_,
         address factory_,
         address wNative_,
         address usdc_
-    ) Ownable(owner_) {
+    ) Ownable(address(this)) {
         if (
-            seaport_ == address(0) || conduit_ == address(0) || keeper_ == address(0)
-                || factory_ == address(0) || wNative_ == address(0)
+            seaport_ == address(0) || conduit_ == address(0) || factory_ == address(0)
+                || wNative_ == address(0)
         ) {
             revert ZeroAddress();
         }
@@ -206,6 +206,18 @@ contract Seavault is Ownable2Step, IERC1271 {
         wNative = wNative_;
         usdc = usdc_;
         seaportVersionHash = versionHash;
+    }
+
+    /// @notice Sets the owner, keeper and policy defaults on a new clone.
+    /// @dev The factory calls this during creation. The implementation owns itself, and vault
+    ///      ownership cannot be renounced, so only a fresh clone has a zero owner.
+    function initialize(address owner_, address keeper_) external {
+        if (msg.sender != address(factory)) revert NotFactory();
+        if (owner() != address(0)) revert AlreadyInitialized();
+        if (owner_ == address(0)) revert OwnableInvalidOwner(address(0));
+        if (keeper_ == address(0)) revert ZeroAddress();
+
+        _transferOwnership(owner_);
         keeper = keeper_;
         maxOrderDuration = DEFAULT_MAX_ORDER_DURATION;
         maxFeeBps = DEFAULT_MAX_FEE_BPS;

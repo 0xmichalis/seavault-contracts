@@ -303,6 +303,19 @@ contract SeavaultFulfillForkTest is BaseFork {
         assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
     }
 
+    function test_keeperUnwrapsRealWethBackIntoTheClone() public {
+        vm.deal(address(vault), PRICE);
+        vm.startPrank(keeper);
+        vault.wrapETH(WETH, PRICE);
+        assertEq(address(vault).balance, 0);
+        vault.unwrapWETH(WETH, PRICE);
+        vm.stopPrank();
+
+        assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
+        assertEq(address(vault).balance, PRICE);
+        assertEq(address(factory.vaultImplementation()).balance, 0);
+    }
+
     function test_takerFillsVaultUsdcOffer() public {
         Seavault.CollectionWitness[] memory witnesses = _activateUsdcPolicy();
         vm.prank(owner);

@@ -3,7 +3,6 @@ pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 
-import {Seavault} from "../src/Seavault.sol";
 import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {ICreateX} from "../src/interfaces/ICreateX.sol";
 
@@ -20,7 +19,7 @@ import {ICreateX} from "../src/interfaces/ICreateX.sol";
 ///      becomes the fee admin and the initial fee recipient.
 ///
 ///      Deploy:
-///        FACTORY_SALT_SEED=seavault-factory-v2 \
+///        FACTORY_SALT_SEED=seavault-factory-v3 \
 ///        W_NATIVE=0x4200000000000000000000000000000000000006 \
 ///        USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
 ///        forge script script/DeploySeavaultFactory.s.sol --rpc-url base --account deployer \
@@ -28,7 +27,7 @@ import {ICreateX} from "../src/interfaces/ICreateX.sol";
 ///
 ///      Predict, without touching a key:
 ///        forge script script/DeploySeavaultFactory.s.sol --sig "predict(address,string)" \
-///        0xDEPLOYER seavault-factory-v2 --rpc-url base
+///        0xDEPLOYER seavault-factory-v3 --rpc-url base
 contract DeploySeavaultFactory is Script {
     ICreateX public constant CREATE_X = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
     address public constant SEAPORT_V1_6 = 0x0000000000000068F116a894984e2DB1123eB395;
@@ -87,6 +86,7 @@ contract DeploySeavaultFactory is Script {
         // would silently land the factory somewhere other than the shared cross-chain address.
         require(address(factory) == predicted, "factory address does not match prediction");
         console2.log("deployed factory ", address(factory));
+        console2.log("vault implementation", address(factory.vaultImplementation()));
     }
 
     /// @notice Records a confirmed deployment from this chain's latest broadcast, without a wallet.
@@ -199,10 +199,22 @@ contract DeploySeavaultFactory is Script {
                 && deployment.factory.usdc() == deployment.usdc,
             "factory wiring does not match deployment"
         );
+        address implementation = address(deployment.factory.vaultImplementation());
+        // Resolve the constructor-patched immutables in the local simulation using the deployed
+        // factory address. The clone's delegate target is authenticated by its exact runtime.
+        address expectedImplementation = vm.deployCode(
+            "Seavault.sol:Seavault",
+            abi.encode(
+                deployment.seaport,
+                deployment.conduit,
+                address(deployment.factory),
+                deployment.wNative,
+                deployment.usdc
+            )
+        );
         require(
-            deployment.factory.vaultCodeStore().codehash
-                == keccak256(abi.encodePacked(bytes1(0x00), type(Seavault).creationCode)),
-            "vault code store does not match current build"
+            implementation.codehash == expectedImplementation.codehash,
+            "vault implementation does not match current build"
         );
         deployment.sourceCommit = vm.parseJsonString(broadcastJson, ".commit");
 
@@ -222,11 +234,10 @@ contract DeploySeavaultFactory is Script {
         vm.serializeAddress(object, "conduit", deployment.conduit);
         vm.serializeAddress(object, "wNative", deployment.wNative);
         vm.serializeAddress(object, "usdc", deployment.usdc);
-        vm.serializeAddress(object, "vaultCodeStore", deployment.factory.vaultCodeStore());
+        vm.serializeAddress(object, "vaultImplementation", implementation);
         vm.serializeBytes32(object, "factoryRuntimeCodeHash", address(deployment.factory).codehash);
-        string memory json = vm.serializeBytes32(
-            object, "vaultCodeStoreHash", deployment.factory.vaultCodeStore().codehash
-        );
+        string memory json =
+            vm.serializeBytes32(object, "vaultImplementationCodeHash", implementation.codehash);
         return _writeRecord(json, address(deployment.factory));
     }
 

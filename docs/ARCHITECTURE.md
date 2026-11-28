@@ -218,10 +218,10 @@ leaves existing sessions active until they expire or OpenSea revokes them.
 
 ## Layout
 
-    src/Seavault.sol                        the vault
+    src/Seavault.sol                        shared vault implementation
     src/SeavaultFactory.sol                 deployment, registry and keeper access
     src/libraries/SeaportOrderHash.sol       Seaport digest re-derivation
-    src/libraries/CodeStore.sol              vault creation code, kept outside the factory
+    src/libraries/SeavaultClone.sol          fixed-target clone creation code
     script/DeploySeavaultFactory.s.sol      CREATE3 deployment of the factory
     script/CreateVault.s.sol                vault creation through the factory
     test/*.t.sol                            policy, admin, signature-encoding tests

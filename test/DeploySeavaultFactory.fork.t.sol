@@ -5,6 +5,7 @@ import {DeploySeavaultFactory} from "../script/DeploySeavaultFactory.s.sol";
 import {SeavaultFactory} from "../src/SeavaultFactory.sol";
 import {ICreateX} from "../src/interfaces/ICreateX.sol";
 import {BaseFork} from "./helpers/BaseFork.sol";
+import {MockSeaport} from "./mocks/MockSeaport.sol";
 
 /// @notice Factory deployment determinism against the real CreateX factory. Vault addresses derive
 ///         from the factory address, so this is what makes them match across chains.
@@ -19,7 +20,7 @@ contract DeploySeavaultFactoryForkTest is BaseFork {
         forkBase();
         deployScript = new DeploySeavaultFactory();
         createX = deployScript.CREATE_X();
-        seed = "seavault-factory-v2";
+        seed = "seavault-factory-v3";
     }
 
     function test_deploysAtPredictedAddress() public {
@@ -45,10 +46,11 @@ contract DeploySeavaultFactoryForkTest is BaseFork {
 
         vm.revertToState(beforeDeploy);
         vm.chainId(1);
+        address otherSeaport = address(new MockSeaport());
         address otherWrapper = makeAddr("otherWrapper");
         address onEthereum = _deploy(
             deployer,
-            address(0x5EA),
+            otherSeaport,
             address(0xc0ffee),
             makeAddr("otherOwner"),
             otherWrapper,

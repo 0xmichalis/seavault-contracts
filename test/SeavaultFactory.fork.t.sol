@@ -82,6 +82,21 @@ contract SeavaultFactoryForkTest is BaseFork {
         assertEq(factory.ownedVaultOf(alice), address(vault));
     }
 
+    function test_clonesShareCodeAndKeepIndependentState() public {
+        vm.prank(alice);
+        Seavault alicesVault = factory.createVault(SALT, aliceKeeper);
+        vm.prank(bob);
+        Seavault bobsVault = factory.createVault(SALT, bobKeeper);
+
+        assertEq(address(alicesVault).code.length, 52);
+        assertEq(address(alicesVault).codehash, address(bobsVault).codehash);
+        vm.prank(alice);
+        alicesVault.setKeeper(makeAddr("replacementKeeper"));
+        assertEq(bobsVault.owner(), bob);
+        assertEq(bobsVault.keeper(), bobKeeper);
+        assertEq(factory.vaultImplementation().keeper(), address(0));
+    }
+
     function test_discoversCurrentAndPendingOwnersAfterTransfers() public {
         vm.prank(alice);
         Seavault vault = factory.createVault(SALT, aliceKeeper);
